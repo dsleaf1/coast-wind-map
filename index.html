@@ -142,7 +142,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22d (phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
+  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22e (Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
 </header>
 <main>
   <div class="bar">
@@ -155,7 +155,7 @@
            snaps to a neighbouring step and jumps on the first drag -->
       <div class="oprow">
         <button id="opDown" type="button" title="Less fill opacity" aria-label="Less fill opacity">−</button>
-        <input type="range" id="opacity" min="0.2" max="1" step="0.01" title="Opacity of the coloured fill; the legend swatches follow it">
+        <input type="range" id="opacity" min="0" max="1" step="0.01" title="Opacity of the coloured fill; the legend swatches follow it">
         <button id="opUp" type="button" title="More fill opacity" aria-label="More fill opacity">+</button>
       </div></div>
     <div class="timewrap"><label for="time" id="timeCap">Forecast timeline</label>
@@ -763,7 +763,7 @@ function syncOpacityUI(){
   const a=getAlpha();
   $("opacity").value=a; $("opacityVal").textContent=Math.round(a*100)+"%";
 }
-const clampAlpha=a=>Math.min(1,Math.max(0.2,a));
+const clampAlpha=a=>Math.min(1,Math.max(0,a));   // 0 = fill fully off (arrows/mesh only)
 function setAlpha(a){
   setActiveAlpha(a);
   syncOpacityUI(); applyModeGL(); buildLegend(); render(); updateURL();

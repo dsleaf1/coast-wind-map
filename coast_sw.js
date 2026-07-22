@@ -17,7 +17,7 @@
  * the one file serves both trees: index.html (deployed) and coast_wind_map.html
  * (the cape working copy under the local dev server).
  */
-const CACHE_VERSION = "coastwind-shell-v4";   // 2026-07-22d: no Region selector on phone + double-tap-zoom guard
+const CACHE_VERSION = "coastwind-shell-v5";   // 2026-07-22e: Fill opacity range 0-100%
 
 const SHELL = [
   "./",
