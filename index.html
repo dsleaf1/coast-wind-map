@@ -123,7 +123,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22 (HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
+  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22b (uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
 </header>
 <main>
   <div class="bar">
@@ -323,6 +323,7 @@ function tileOrigin(bbox){ return CRS.latLngToPoint(L.latLng((bbox[1]+bbox[3])/2
 function buildFieldQuads(t,cols,rows,lut){
   const [W,S,E,N]=t.bbox, stepLon=(E-W)/(cols-1), stepLat=(N-S)/(rows-1);
   t.ref=tileOrigin(t.bbox);
+  t.gcols=cols; t.grows=rows; t.glut=lut||null;   // grid shape: drawArrows strides ON the grid
   const pos=new Float32Array(t.ne*6*2); let k=0;
   for(let m=0;m<t.ne;m++){ const cell=lut?lut[m]:m, r=(cell/cols)|0, c=cell%cols;
     const lon=W+c*stepLon, lat=N-r*stepLat; t.cx[m]=lon; t.cy[m]=lat;
@@ -354,6 +355,20 @@ function drawGL(){
     gl.drawArrays(gl.TRIANGLES,0,t.ne*t.vpe);
   }
 }
+// How many grid rows/cols to skip so drawn arrows sit ~tp screen-pixels apart, measured at the
+// tile's centre latitude (the grid is lat/lon, so px-per-cell varies only slowly across a tile).
+// ceil(tp*0.8/px) rather than round(): never denser than ~0.8·tp, so arrows can't overlap.
+// Returns null for tiles with no regular grid (currents mesh) — caller keeps the old bucket test.
+function gridStride(t,tp){
+  if(!t.gcols||!t.grows) return null;
+  const [W,S,E,N]=t.bbox, stepLon=(E-W)/(t.gcols-1), stepLat=(N-S)/(t.grows-1);
+  const clat=(S+N)/2, clon=(W+E)/2, p0=map.latLngToContainerPoint([clat,clon]);
+  const pxx=Math.abs(map.latLngToContainerPoint([clat,clon+stepLon]).x-p0.x);
+  const pxy=Math.abs(map.latLngToContainerPoint([clat+stepLat,clon]).y-p0.y);
+  if(!(pxx>0)||!(pxy>0)) return null;
+  const sc=Math.max(1,Math.ceil(tp*0.8/pxx)), sr=Math.max(1,Math.ceil(tp*0.8/pxy));
+  return {sc,sr,eff:Math.min(sc*pxx,sr*pxy)};
+}
 function drawArrows(){
   const size=map.getSize(), dpr=window.devicePixelRatio||1;
   arc.width=size.x*dpr; arc.height=size.y*dpr; arc.style.width=size.x+"px"; arc.style.height=size.y+"px";
@@ -361,15 +376,27 @@ function drawArrows(){
   const tp=+$("arrows").value; if(!tp) return;
   const md=MODES[mode];
   const b=map.getBounds(), W=b.getWest(),E=b.getEast(),S=b.getSouth(),N=b.getNorth();
-  const seen=new Set(), L2=Math.max(4,Math.min(12,tp*0.42));
+  const seen=new Set();
   ctx.strokeStyle="rgba(20,20,30,.92)"; ctx.fillStyle="rgba(20,20,30,.92)"; ctx.lineWidth=1.1;
-  for(const t of activeTiles()){
+  const acts=activeTiles();
+  for(const t of acts){
     decodeTile(t);
+    // Thin ON THE GRID, not by screen bucket. The old first-come pixel-bucket test aliased against
+    // the data lattice whenever the cell spacing was near tp — some buckets caught a point, their
+    // neighbours caught none — which is what made the arrows clump into wavy bands at some zooms.
+    // A row/column stride keeps a strictly uniform lattice at every zoom. (Tiles with no regular
+    // grid would fall back to the bucket test; the wind tile always has one.)
+    const st=gridStride(t,tp);
+    const L2=st?Math.max(4,Math.min(12,st.eff*0.42)):Math.max(4,Math.min(12,tp*0.42));
     for(let i=0;i<t.ne;i++){
       const lo=t.cx[i], la=t.cy[i]; if(lo<W||lo>E||la<S||la>N) continue;
       const s=t.spd[i]; if(isNaN(s)||s<md.arrowMin) continue;
+      if(st){ const cell=t.glut?t.glut[i]:i, r=(cell/t.gcols)|0, c=cell%t.gcols;
+              if(r%st.sr||c%st.sc) continue; }
       const p=map.latLngToContainerPoint([la,lo]);
-      const key=((p.x/tp)|0)*99999+((p.y/tp)|0); if(seen.has(key)) continue; seen.add(key);
+      // Cross-tile overlap guard only (one tile can't collide with itself once strided).
+      if(!st||acts.length>1){ const q=st?tp*0.55:tp;
+        const key=((p.x/q)|0)*99999+((p.y/q)|0); if(seen.has(key)) continue; seen.add(key); }
       // Wind stores FROM; arrowFlip(180) turns it into "where it's going" (downwind).
       const tw=(t.dir[i]+md.arrowFlip)*Math.PI/180, dx=Math.sin(tw), dy=-Math.cos(tw), x2=p.x+dx*L2, y2=p.y+dy*L2;
       ctx.beginPath(); ctx.moveTo(p.x-dx*L2,p.y-dy*L2); ctx.lineTo(x2,y2); ctx.stroke();

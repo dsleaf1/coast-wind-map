@@ -17,7 +17,7 @@
  * the one file serves both trees: index.html (deployed) and coast_wind_map.html
  * (the cape working copy under the local dev server).
  */
-const CACHE_VERSION = "coastwind-shell-v1";   // 2026-07-22: first release
+const CACHE_VERSION = "coastwind-shell-v2";   // 2026-07-22b: uniform arrow lattice (drawArrows strides on the grid)
 
 const SHELL = [
   "./",
