@@ -30,6 +30,11 @@
   #opacity{width:130px;margin:9px 0} #opacityVal{color:var(--ink);font-weight:700}
   /* the ± nudge buttons flanking the opacity slider are phone-only (see the media block) */
   .oprow{display:flex;align-items:center;gap:6px} #opDown,#opUp{display:none}
+  /* iOS read a quick second tap on a control (the opacity ±, mostly) as double-tap-to-zoom. That
+     page-zooms the fixed 100dvh phone layout, and because every pinch inside #map is captured by
+     Leaflet there is then no way to pinch back out — the map looks frozen. `manipulation` drops
+     double-tap zoom (and the 300 ms tap delay) while leaving real pinch-zoom alone. */
+  header,.bar,.offbar,button,select,label{touch-action:manipulation}
   .timewrap{display:flex;flex-direction:column;gap:4px;flex:1 1 320px;min-width:260px}
   .timewrap .row{display:flex;align-items:center;gap:8px} #time{flex:1} #timeLabel{font-weight:700;font-size:13px;min-width:150px}
   #stepBack,#stepFwd{display:none}   /* hour-step buttons are the phone's timeline control; desktop keeps ▶ play */
@@ -108,9 +113,10 @@
         box-shadow:0 1px 3px rgba(0,0,0,.3);margin-top:-11px}
     #time::-moz-range-thumb,#opacity::-moz-range-thumb{width:26px;height:26px;border-radius:50%;
         background:#0a3d62;border:2px solid #fff}
-    /* Base map + Arrows are fixed on the phone (Esri terrain / densest) — controls hidden,
-       two fewer control rows so the map gets the screen */
-    #baseFld,#arrowsFld{display:none}
+    /* Base map + Arrows + Region are all fixed on the phone (Esri terrain / densest / navigate by
+       pinch-and-pan) — controls hidden, three fewer control rows so the map gets the screen.
+       Region was only ever a navigation shortcut: tiles load from the viewport either way. */
+    #baseFld,#arrowsFld,#regionFld{display:none}
     #map{flex:1 1 240px;height:auto;min-height:180px;border-radius:8px}
     .status{flex:0 0 auto;margin:4px 0 0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .offbar{flex:0 0 auto;margin-top:6px}
@@ -136,11 +142,11 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22c (phone: Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
+  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22d (phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
 </header>
 <main>
   <div class="bar">
-    <div class="fld"><label for="region">Region</label><select id="region"></select></div>
+    <div class="fld" id="regionFld"><label for="region">Region</label><select id="region"></select></div>
     <div class="fld" id="baseFld"><label for="base">Base map</label><select id="base"></select></div>
     <div class="fld" id="arrowsFld"><label for="arrows">Arrows</label>
       <select id="arrows"><option value="0">Off</option><option value="26">Normal</option><option value="18" selected>Dense</option><option value="12">Denser</option></select></div>
