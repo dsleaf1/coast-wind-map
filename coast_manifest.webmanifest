@@ -1,0 +1,25 @@
+{
+  "name": "Coast Wind Map",
+  "short_name": "Coast Wind",
+  "description": "HRDPS 2.5 km wind, Puget Sound to Dixon Entrance including Haida Gwaii.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0a3d62",
+  "background_color": "#0a3d62",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

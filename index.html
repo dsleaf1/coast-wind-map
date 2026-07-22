@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a3d62">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Coast Wind">
+<link rel="manifest" href="coast_manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Coast Wind Map — HRDPS 2.5 km, Puget Sound → Dixon Entrance (WebGL)</title>
+<!-- Leaflet 1.9.4 vendored (SRI-verified against unpkg): the offline shell (sw.js) can only
+     cache same-origin assets, and a CDN copy would leave the whole app dead in airplane mode. -->
+<link rel="stylesheet" href="vendor/leaflet.css"/>
+<style>
+  :root{ --ink:#1b2430; --muted:#667085; --bg:#f5f7fa; --line:#e3e8ef; }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;margin:0;background:var(--bg);color:var(--ink);line-height:1.45}
+  header{background:#0a3d62;color:#fff;padding:16px 22px}
+  header h1{margin:0;font-size:20px} header p{margin:4px 0 0;font-size:13px;opacity:.92}
+  main{max-width:1060px;margin:0 auto;padding:18px}
+  .bar{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px}
+  .fld{display:flex;flex-direction:column;gap:3px}
+  .fld label{font-size:12px;color:var(--muted);font-weight:600}
+  select{font:inherit;border:1px solid #d7dde6;border-radius:8px;padding:9px 10px}
+  select option:disabled{color:#aab2bd}
+  button{font:inherit;border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer}
+  #mode{font-weight:600}
+  #opacity{width:130px;margin:9px 0} #opacityVal{color:var(--ink);font-weight:700}
+  .timewrap{display:flex;flex-direction:column;gap:4px;flex:1 1 320px;min-width:260px}
+  .timewrap .row{display:flex;align-items:center;gap:8px} #time{flex:1} #timeLabel{font-weight:700;font-size:13px;min-width:150px}
+  #stepBack,#stepFwd{display:none}   /* hour-step buttons are the phone's timeline control; desktop keeps ▶ play */
+  #map{height:640px;border:1px solid var(--line);border-radius:12px;position:relative}
+  /* stacking is owned by the "fields" pane (z 450); within it, DOM order puts arrows over the fill */
+  .ovl{position:absolute;top:0;left:0;pointer-events:none}
+  .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;align-items:center}
+  .lchip{display:flex;align-items:center;gap:6px;font-size:11px;border:1px solid var(--line);border-radius:6px;padding:3px 7px;background:#fff}
+  .lsw{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.15)}
+  .status{font-size:13px;color:var(--muted);margin-top:10px} .status.err{color:#b54708}
+  .note{font-size:12px;color:var(--muted);margin-top:10px}
+  .chk{flex-direction:row;align-items:center;gap:6px;padding-bottom:9px}
+  .chk input{width:16px;height:16px} .chk label{color:var(--ink)}
+  /* hover readout */
+  #tip{position:fixed;z-index:9999;pointer-events:none;display:none;max-width:250px;
+       background:rgba(17,24,32,.94);color:#fff;font-size:12px;line-height:1.5;
+       padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+  #tip b{color:#fff} #tip .k{color:#9fb3c8} #tip .hz{font-weight:700}
+  /* Touch (pinMode): the readout pins to the bottom of the viewport instead of following the finger,
+     so a thumb never covers the numbers. A ✕ — and tapping empty map — dismisses it. The desktop
+     following-tip keeps position:fixed + inline left/top (pointer-events:none so it never blocks a
+     hover). Class toggled in doHover(); the ✕ + body live as persistent children of #tip. */
+  #tip.pinned{position:static;left:auto;top:auto;max-width:none;pointer-events:auto;
+       position:fixed;left:8px;right:8px;bottom:8px;max-height:62vh;overflow-y:auto;padding-top:12px}
+  #tip .tipClose{display:none}
+  #tip.pinned .tipClose{display:flex;align-items:center;justify-content:center;position:absolute;
+       top:2px;right:2px;width:44px;height:44px;z-index:1;background:rgba(17,24,32,.55);border:none;
+       border-radius:8px;color:#cdd8e4;font-size:18px;line-height:1;cursor:pointer}
+  #tip.pinned .tipBody>*:first-child{padding-right:42px}   /* keep the title clear of the ✕ */
+  /* offline controls + two-clock staleness banner (Unified_Map_Phone_Plan step 4). One compact
+     row under the status line on desktop; the phone media block below grows the buttons to
+     wet-finger size. Chip colours = run-age bands (see updateStale for the thresholds). */
+  .offbar{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin-top:8px;font-size:12px}
+  .offbar button{font-size:12px;padding:6px 10px}
+  .offbar .savedlist{color:var(--muted)}
+  #stale{display:none;gap:6px;flex-wrap:wrap;align-items:center}
+  #stale .clk{display:inline-block;padding:2px 9px;border-radius:10px;font-weight:700;color:#fff}
+  #stale .clk.ok{background:#1a7f37} #stale .clk.amber{background:#b45309} #stale .clk.red{background:#b42318}
+  #stale .offnote{color:#b45309;font-weight:600}
+  /* ---------- phone layout (Unified_Map_Phone_Plan step 1; desktop untouched) ----------
+     Body becomes a fixed 100dvh column: one-line header, the control bar kept as-is per David's
+     step-0 decision (compacted, ≥44px targets), then the map takes every remaining pixel with the
+     timeline directly above it; opening About scrolls within <main>. The legend turns into a
+     collapsible overlay on the map (DOM moves live in mobileLayout()). dvh — with a vh fallback —
+     tracks iOS Safari's URL-bar collapse; the visualViewport wiring re-measures the map. */
+  @media (max-width:640px){
+    body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+    header{padding:7px 12px;flex:0 0 auto}
+    header h1{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow-y:auto;
+         padding:8px;max-width:none;width:100%}
+    .bar{flex:0 0 auto;gap:6px 8px;margin-bottom:6px}
+    .fld{flex:1 1 45%;min-width:0;gap:2px}
+    .fld label{font-size:11px}
+    .fld select{width:100%;min-height:44px;padding:6px 8px}
+    .chk input{width:22px;height:22px}
+    #opacity{width:100%;height:32px;margin:2px 0}
+    .timewrap{flex:1 1 100%;min-width:0}
+    #time{height:44px}
+    /* phone: ▶ play (auto-advance) swaps for ◀ ▶ hour-step buttons — deliberate stepping
+       beats an animation on a small screen, and each tap is a wet-finger 48px target */
+    #playBtn{display:none}
+    #stepBack,#stepFwd{display:inline-block;min-width:48px;min-height:44px}
+    #timeLabel{min-width:0;font-size:12px}
+    /* wet-finger: fat slider thumbs on a slim custom track (native thumbs are ~12px = too small to
+       grab), and a 44px About tap row. #time already reserves a 44px-tall hit area (above). */
+    #time,#opacity{-webkit-appearance:none;appearance:none;background:transparent}
+    #time::-webkit-slider-runnable-track,#opacity::-webkit-slider-runnable-track{height:5px;background:#c7d2de;border-radius:3px}
+    #time::-moz-range-track,#opacity::-moz-range-track{height:5px;background:#c7d2de;border-radius:3px}
+    #time::-webkit-slider-thumb,#opacity::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+        width:26px;height:26px;border-radius:50%;background:#0a3d62;border:2px solid #fff;
+        box-shadow:0 1px 3px rgba(0,0,0,.3);margin-top:-11px}
+    #time::-moz-range-thumb,#opacity::-moz-range-thumb{width:26px;height:26px;border-radius:50%;
+        background:#0a3d62;border:2px solid #fff}
+    /* Base map + Arrows are fixed on the phone (Esri terrain / densest) — controls hidden,
+       two fewer control rows so the map gets the screen */
+    #baseFld,#arrowsFld{display:none}
+    #map{flex:1 1 240px;height:auto;min-height:180px;border-radius:8px}
+    .status{flex:0 0 auto;margin:4px 0 0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .offbar{flex:0 0 auto;margin-top:6px}
+    .offbar button{min-height:44px;flex:1 1 40%}
+    .note{display:none}                /* per-mode hint; hidden to give the map the room */
+    /* legend → collapsible overlay on the map; mobileLayout() moves the node inside #map */
+    #map .legend{position:absolute;left:8px;right:60px;bottom:8px;z-index:1100;margin:0;display:none;
+         background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:10px;
+         padding:8px;max-height:45%;overflow:auto;box-shadow:0 2px 10px rgba(0,0,0,.2)}
+    #map .legend.open{display:flex}
+    #legendBtn{position:absolute;right:8px;bottom:8px;z-index:1101;min-width:44px;min-height:44px;
+         font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Coast Wind Map — HRDPS 2.5 km</h1>
+  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22 (HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
+</header>
+<main>
+  <div class="bar">
+    <div class="fld"><label for="region">Region</label><select id="region"></select></div>
+    <div class="fld" id="baseFld"><label for="base">Base map</label><select id="base"></select></div>
+    <div class="fld" id="arrowsFld"><label for="arrows">Arrows</label>
+      <select id="arrows"><option value="0">Off</option><option value="26">Normal</option><option value="18" selected>Dense</option><option value="12">Denser</option></select></div>
+    <div class="fld"><label for="opacity">Fill opacity <span id="opacityVal"></span></label>
+      <!-- step 0.01: the default (0.72) must be exactly representable or the thumb
+           snaps to a neighbouring step and jumps on the first drag -->
+      <input type="range" id="opacity" min="0.2" max="1" step="0.01" title="Opacity of the coloured fill; the legend swatches follow it"></div>
+    <div class="timewrap"><label for="time" id="timeCap">Forecast timeline</label>
+      <div class="row"><button id="playBtn">▶</button><button id="stepBack" title="Back one hour">◀</button><button id="stepFwd" title="Forward one hour">▶</button><input type="range" id="time" min="0" max="48" value="0"><span id="timeLabel"></span></div>
+    </div>
+  </div>
+  <div class="legend" id="legend"></div>
+  <div id="map"></div>
+  <p class="status" id="status">Loading…</p>
+  <div class="offbar" id="offbar">
+    <span id="stale"></span>
+    <button id="saveBtn">⬇ Save offline</button>
+    <button id="refreshBtn">↻ Refresh</button>
+    <span class="savedlist" id="savedList"></span>
+  </div>
+  <p class="note" id="note"></p>
+</main>
+<div id="tip"></div>
+<script src="vendor/leaflet.js"></script>
+<script>
+const R2="https://pub-cb8eb71f75d64a57a0d021318ccd0ae7.r2.dev";
+const $=id=>document.getElementById(id);
+// [name, center, zoom] — navigation presets only: the wind field is ONE whole-coast tile at native
+// 2.5 km, so nothing loads per region (unlike the unified map's mesh tiles). North to Dixon Entrance.
+const REGIONS=[
+  ["Haida Gwaii & Hecate",[52.6,-131.0],8],
+  ["Cape St James",[51.94,-131.01],10],
+  ["West Coast Vancouver I.",[49.4,-126.2],8],
+  ["Johnstone Str → QCS",[50.95,-127.7],10],
+  ["Broughtons & Discovery",[50.45,-125.9],10],
+  ["Northern Georgia Strait",[49.6,-124.4],10],
+  ["San Juan & Gulf Islands",[48.60,-123.1],10],
+  ["Juan de Fuca",[48.35,-124.35],10],
+  ["Puget Sound",[47.30,-122.55],11],
+];
+// The coast-overview bbox in hrdps-ingest/ingest.py OVERVIEWS; keep in sync.
+const FULL_EXTENT=[[46.9,-133.6],[54.5,-122.0]];
+const DRY=-1000;                            // sentinel written into the GL speed buffer; always discarded
+
+// ---- Wind: Beaufort km/h bins (byte = km/h), arrows point DOWNWIND (byte dir is FROM) ----
+// Edges/colours/names copied verbatim from hrdps_map.html so the two apps read identically.
+const W_EDGES=[1,6,12,20,29,39,50,62,75,89,103,118];
+const W_COL=["#dfeaf2","#bfe3ec","#a6dd9f","#d7e84f","#f3c44d","#f0893b","#e44f2c","#c71d2b","#9a2240","#6b2a5a","#4a2370","#2c1a55","#14102e"];
+const W_NAMES=["Calm","Light air","Light breeze","Gentle","Moderate","Fresh","Strong","Near gale","Gale","Strong gale","Storm","Violent storm","Hurricane"];
+const kt = k => Math.round(k/1.852);
+
+const GRAY_LAND="#f0efef";             // approx. Esri light-gray canvas, for the wind legend
+const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
+function blend(hex,overHex,a){ const c=hex2rgb(hex), w=hex2rgb(overHex);
+  const m=k=>Math.round(255*(c[k]*a + w[k]*(1-a))); return `rgb(${m(0)},${m(1)},${m(2)})`; }
+
+const BASES={
+  usgs:{name:"USGS topo",url:"https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",attr:"USGS The National Map"},
+  topo:{name:"Esri terrain",url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri"},
+  imagery:{name:"Satellite",url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri"},
+  gray:{name:"Plain coastline",url:"https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri"},
+};
+const LABELS_URL="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
+
+/* ---------- Mode (single: wind) ----------
+   Kept as a MODES table + const mode so this fork stays diffable against unified_map.html: the
+   entry carries the ramp/alpha/discard, arrow convention and base-map defaults that the shared
+   plumbing reads. */
+const MODES={
+  // alpha defaults to 0.72 (the Fill opacity slider overrides it): the Esri reference layer carries
+  // place names but NOT the shoreline, so the fill must stay sheer enough for the gray canvas's land
+  // to read through. Above ~0.8 the coast vanishes under the fill.
+  wind:{    label:"Wind", edges:W_EDGES, cols:W_COL, alpha:0.72,
+            // paint every valid cell incl. F0 calm (matches hrdps_map.html); only DRY discards
+            minDraw:-1.0, unit:"km/h", base:"gray", labels:true, arrowFlip:180, arrowMin:1.0,
+            legendOver:GRAY_LAND },
+};
+const mode="wind";
+const glMode=()=>MODES.wind;
+const getAlpha=()=>MODES.wind.alpha;
+const setActiveAlpha=v=>{ MODES.wind.alpha=clampAlpha(v); };
+
+const PTL=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false});
+
+// zoomAnimation off keeps the WebGL overlay perfectly registered with the tiles
+// Lock the view to the model: can't zoom out past the SSCOFS extent or pan off it.
+const map=L.map("map",{zoomAnimation:false,fadeAnimation:false,
+  maxBounds:L.latLngBounds(FULL_EXTENT).pad(0.12),maxBoundsViscosity:1.0});
+// The bookmarked ?lat/lon/z(/h), captured ONCE at script time: updateURL() starts rewriting the
+// query string as soon as the map first moves, so a later reader sees its own echo — h was the
+// cold-load restore miss's other half (a slow manifest fetch let updateURL overwrite ?h with 0
+// before boot() read it back).
+const URL_VIEW=(()=>{ const q=new URLSearchParams(location.search);
+  const lat=parseFloat(q.get("lat")), lon=parseFloat(q.get("lon")), z=parseInt(q.get("z"),10);
+  return { view:(isFinite(lat)&&isFinite(lon)&&isFinite(z))?{lat,lon,z}:null, h:parseInt(q.get("h"),10) }; })();
+// Fit to the model extent and lock min-zoom there. Done via a helper because on first load of the
+// deployed page the map box can still report 0×0 at script time — then fitBounds resolves to world
+// zoom and setMinZoom pins it there (the "whole globe" bug). Re-fit once after layout to correct it.
+// A re-fit must never discard a bookmarked view: the guards can fire either side of boot()'s
+// applyURL() (that race WAS the cold-load restore miss), so the view is re-applied right here and
+// the order stops mattering.
+function fitExtent(){ map.setMinZoom(0); map.invalidateSize(); map.fitBounds(FULL_EXTENT,{animate:false}); map.setMinZoom(map.getZoom());
+  if(URL_VIEW.view){ const v=URL_VIEW.view; map.setView([v.lat,v.lon],Math.max(v.z,map.getMinZoom()),{animate:false}); } }
+fitExtent();
+// getMinZoom()<1 = the extent fit itself never took: a URL view restored above can leave zoom≥1
+// while minZoom stayed unlocked at 0, which the two original checks alone would wrongly pass.
+const fitOK=()=> map.getSize().x>=80 && map.getZoom()>=1 && map.getMinZoom()>=1;
+requestAnimationFrame(()=>{ if(!fitOK()) fitExtent(); });
+addEventListener("load",()=>{ if(!fitOK()) fitExtent(); });
+/* Overlay stacking. The GL/arrow canvases must live INSIDE mapPane, in a pane of their own:
+   mapPane carries a transform, so it is a stacking context, and anything parented to it (a labels
+   pane, however high its z-index) can never rise above a canvas that is mapPane's sibling in the
+   container. Panes it is — then "labels" at 460 genuinely draws over the field at 450.
+   The cost: mapPane is translated as you pan, so the canvases must be re-pinned to the viewport
+   every frame (syncOverlayPos), because they are drawn in container coordinates. */
+for(const [p,z] of [["fields",450],["labels",460]]){
+  map.createPane(p); const el=map.getPane(p); el.style.zIndex=z; el.style.pointerEvents="none";
+}
+let baseLayer=null, labelLayer=null;
+function setBase(key){
+  if(baseLayer) map.removeLayer(baseLayer);
+  const b=BASES[key]; baseLayer=L.tileLayer(b.url,{maxZoom:16,attribution:b.attr}).addTo(map);
+  const want=MODES[mode].labels;
+  if(want && !labelLayer) labelLayer=L.tileLayer(LABELS_URL,{maxZoom:16,pane:"labels"}).addTo(map);
+  if(!want && labelLayer){ map.removeLayer(labelLayer); labelLayer=null; }
+}
+// two overlay canvases in the "fields" pane: WebGL (speed) + 2D (arrows, drawn over it)
+const cont=map.getPane("fields");
+const glc=document.createElement("canvas"); glc.className="ovl"; cont.appendChild(glc);
+const arc=document.createElement("canvas"); arc.className="ovl"; cont.appendChild(arc);
+// Both canvases are drawn in CONTAINER pixels, but sit in the (translated) mapPane. Re-pin them to
+// the viewport's top-left in layer coordinates each frame so the field stays registered with tiles.
+function syncOverlayPos(){
+  const tl=map.containerPointToLayerPoint([0,0]);
+  L.DomUtil.setPosition(glc,tl); L.DomUtil.setPosition(arc,tl);
+}
+
+/* ---------- WebGL: speed-coloured triangles ----------
+   Vertices are pre-projected to Leaflet pixel space at a reference zoom Z0 (minus a local
+   origin for float precision). Per frame the shader maps them to the container:
+     container = (aPos - uTopLeft) * uScale
+   The ramp is uniform-driven (13 colours / 12 edges max — the unified map's shared-shader shape,
+   kept for diffability); unused edges are padded to 9999 (mediump-safe) and never fire. */
+const Z0=12, CRS=L.CRS.EPSG3857;
+const VS=`attribute vec2 aPos; attribute float aSpeed; uniform vec2 uTopLeft; uniform float uScale; uniform vec2 uSize; varying float vSpeed;
+void main(){ vec2 c=(aPos-uTopLeft)*uScale; gl_Position=vec4(c.x/uSize.x*2.0-1.0, 1.0-c.y/uSize.y*2.0, 0.0, 1.0); vSpeed=aSpeed; }`;
+const FS=`precision mediump float; varying float vSpeed; uniform vec3 uCols[13]; uniform float uEdges[12]; uniform float uAlpha; uniform float uMinDraw;
+void main(){ if(vSpeed<uMinDraw) discard; int bin=0; for(int i=0;i<12;i++){ if(vSpeed>=uEdges[i]) bin=i+1; }
+  vec3 c=uCols[12]; for(int i=0;i<13;i++){ if(i==bin) c=uCols[i]; } gl_FragColor=vec4(c,uAlpha); }`;
+let gl=null, prog=null, loc={};
+let windTile=null;     // HRDPS whole-coast wind tile (the only field)
+function initGL(){
+  // premultipliedAlpha MUST stay true (default): SRC_ALPHA blending onto a transparent clear
+  // already stores premultiplied RGB. Declaring it false makes the browser multiply by alpha a
+  // SECOND time when compositing over the tiles — which darkens every bin and collapses the key.
+  const OPTS={alpha:true,antialias:true};
+  gl=glc.getContext("webgl",OPTS) || glc.getContext("webgl2",OPTS);
+  if(!gl){ setStatus("WebGL unavailable in this browser.",true); return false; }
+  const sh=(t,s)=>{const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(o); return o;};
+  prog=gl.createProgram(); gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS)); gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
+  gl.useProgram(prog);
+  loc.aPos=gl.getAttribLocation(prog,"aPos"); loc.aSpeed=gl.getAttribLocation(prog,"aSpeed");
+  loc.uTopLeft=gl.getUniformLocation(prog,"uTopLeft"); loc.uScale=gl.getUniformLocation(prog,"uScale"); loc.uSize=gl.getUniformLocation(prog,"uSize");
+  loc.uCols=gl.getUniformLocation(prog,"uCols"); loc.uEdges=gl.getUniformLocation(prog,"uEdges");
+  loc.uAlpha=gl.getUniformLocation(prog,"uAlpha"); loc.uMinDraw=gl.getUniformLocation(prog,"uMinDraw");
+  // Separate alpha blending: plain blendFunc scales the ALPHA channel by SRC_ALPHA too, leaving
+  // alpha=a² while RGB is premultiplied at a. The browser then composites a buffer whose colour and
+  // coverage disagree, pulling every speed bin off its legend colour.
+  gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA, gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
+  gl.clearColor(0,0,0,0);
+  applyModeGL();
+  return true;
+}
+function applyModeGL(){
+  if(!gl) return; const m=glMode();          // the wind ramp
+  const cols=new Float32Array(39);
+  for(let i=0;i<13;i++){ const c=hex2rgb(m.cols[Math.min(i,m.cols.length-1)]);
+    cols[i*3]=c[0]; cols[i*3+1]=c[1]; cols[i*3+2]=c[2]; }
+  const edges=new Float32Array(12).fill(9999);   // 9999 (not 1e9): mediump floats top out at 65504
+  m.edges.forEach((e,i)=>edges[i]=e);
+  gl.useProgram(prog);
+  gl.uniform3fv(loc.uCols,cols); gl.uniform1fv(loc.uEdges,edges);
+  gl.uniform1f(loc.uAlpha,getAlpha()); gl.uniform1f(loc.uMinDraw,m.minDraw);
+}
+function tileOrigin(bbox){ return CRS.latLngToPoint(L.latLng((bbox[1]+bbox[3])/2,(bbox[0]+bbox[2])/2),Z0); }
+// Build the GL quad buffer for a regular lat/lon field tile (two triangles per cell, row 0 = north).
+// Cell size comes from bbox+cols+rows, NOT manifest res_deg: res_deg is the model's nominal spacing,
+// while the tile's actual step is (E-W)/(cols-1). They differ for the wind overview (0.02251 vs
+// 0.0225) and the drift would smear the field ~180 m at the east edge.
+function buildFieldQuads(t,cols,rows,lut){
+  const [W,S,E,N]=t.bbox, stepLon=(E-W)/(cols-1), stepLat=(N-S)/(rows-1);
+  t.ref=tileOrigin(t.bbox);
+  const pos=new Float32Array(t.ne*6*2); let k=0;
+  for(let m=0;m<t.ne;m++){ const cell=lut?lut[m]:m, r=(cell/cols)|0, c=cell%cols;
+    const lon=W+c*stepLon, lat=N-r*stepLat; t.cx[m]=lon; t.cy[m]=lat;
+    const p1=CRS.latLngToPoint(L.latLng(lat+stepLat/2,lon-stepLon/2),Z0);
+    const p2=CRS.latLngToPoint(L.latLng(lat-stepLat/2,lon+stepLon/2),Z0);
+    const x1=p1.x-t.ref.x,y1=p1.y-t.ref.y,x2=p2.x-t.ref.x,y2=p2.y-t.ref.y;
+    pos[k++]=x1;pos[k++]=y1; pos[k++]=x2;pos[k++]=y1; pos[k++]=x2;pos[k++]=y2;
+    pos[k++]=x1;pos[k++]=y1; pos[k++]=x2;pos[k++]=y2; pos[k++]=x1;pos[k++]=y2; }
+  t.posBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,t.posBuf); gl.bufferData(gl.ARRAY_BUFFER,pos,gl.STATIC_DRAW);
+  t.spdBuf=gl.createBuffer();
+}
+// The one whole-coast wind tile, at every zoom.
+function activeTiles(){ return windTile&&windTile.ready?[windTile]:[]; }
+function drawGL(){
+  const size=map.getSize(), dpr=window.devicePixelRatio||1;
+  glc.width=size.x*dpr; glc.height=size.y*dpr; glc.style.width=size.x+"px"; glc.style.height=size.y+"px";
+  if(!gl) return; gl.viewport(0,0,glc.width,glc.height); gl.clear(gl.COLOR_BUFFER_BIT);
+  const acts=activeTiles(); if(!acts.length) return;
+  const z=map.getZoom(), scale=Math.pow(2,z-Z0);
+  const tlLL=map.containerPointToLatLng([0,0]); const tl=CRS.latLngToPoint(tlLL,Z0);
+  gl.useProgram(prog);
+  gl.uniform1f(loc.uScale, scale);
+  gl.uniform2f(loc.uSize, size.x, size.y);
+  for(const t of acts){
+    decodeTile(t);
+    gl.uniform2f(loc.uTopLeft, tl.x-t.ref.x, tl.y-t.ref.y);
+    gl.bindBuffer(gl.ARRAY_BUFFER,t.posBuf); gl.enableVertexAttribArray(loc.aPos); gl.vertexAttribPointer(loc.aPos,2,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,t.spdBuf); gl.enableVertexAttribArray(loc.aSpeed); gl.vertexAttribPointer(loc.aSpeed,1,gl.FLOAT,false,0,0);
+    gl.drawArrays(gl.TRIANGLES,0,t.ne*t.vpe);
+  }
+}
+function drawArrows(){
+  const size=map.getSize(), dpr=window.devicePixelRatio||1;
+  arc.width=size.x*dpr; arc.height=size.y*dpr; arc.style.width=size.x+"px"; arc.style.height=size.y+"px";
+  const ctx=arc.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,size.x,size.y);
+  const tp=+$("arrows").value; if(!tp) return;
+  const md=MODES[mode];
+  const b=map.getBounds(), W=b.getWest(),E=b.getEast(),S=b.getSouth(),N=b.getNorth();
+  const seen=new Set(), L2=Math.max(4,Math.min(12,tp*0.42));
+  ctx.strokeStyle="rgba(20,20,30,.92)"; ctx.fillStyle="rgba(20,20,30,.92)"; ctx.lineWidth=1.1;
+  for(const t of activeTiles()){
+    decodeTile(t);
+    for(let i=0;i<t.ne;i++){
+      const lo=t.cx[i], la=t.cy[i]; if(lo<W||lo>E||la<S||la>N) continue;
+      const s=t.spd[i]; if(isNaN(s)||s<md.arrowMin) continue;
+      const p=map.latLngToContainerPoint([la,lo]);
+      const key=((p.x/tp)|0)*99999+((p.y/tp)|0); if(seen.has(key)) continue; seen.add(key);
+      // Wind stores FROM; arrowFlip(180) turns it into "where it's going" (downwind).
+      const tw=(t.dir[i]+md.arrowFlip)*Math.PI/180, dx=Math.sin(tw), dy=-Math.cos(tw), x2=p.x+dx*L2, y2=p.y+dy*L2;
+      ctx.beginPath(); ctx.moveTo(p.x-dx*L2,p.y-dy*L2); ctx.lineTo(x2,y2); ctx.stroke();
+      const a1=tw+2.5,a2=tw-2.5,hs=L2*0.5;
+      ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2+Math.sin(a1)*hs,y2-Math.cos(a1)*hs); ctx.lineTo(x2+Math.sin(a2)*hs,y2-Math.cos(a2)*hs); ctx.closePath(); ctx.fill();
+    }
+  }
+}
+function render(){ syncOverlayPos(); drawGL(); drawArrows(); }
+map.on("move zoomend resize",render);
+// Viewport-size changes Leaflet's own trackResize can miss: iOS Safari's URL-bar collapse/expand
+// (a visualViewport resize, on some versions without a window resize) and rotation. One debounced
+// path re-measures the container; invalidateSize fires the map's "resize" → render when the size
+// really changed, and the explicit render() covers the no-op case so syncOverlayPos re-pins the
+// GL/arrow canvases either way.
+let vpTimer=null;
+function onViewportChange(){ clearTimeout(vpTimer);
+  vpTimer=setTimeout(()=>{ if(window.mobileLayout) mobileLayout();   // breakpoint crossing rides this path too
+    map.invalidateSize({animate:false}); render(); },120); }
+addEventListener("resize",onViewportChange);
+addEventListener("orientationchange",onViewportChange);
+if(window.visualViewport) visualViewport.addEventListener("resize",onViewportChange);
+
+/* ---------- hover / tap readout ----------
+   Point at the map to read the model at that spot: wind speed / Beaufort / direction. Coalesced to
+   one animation frame per move so brute-force nearest-cell stays cheap. Tap does the same on touch. */
+const tip=$("tip");
+// #tip = [✕ button][.tipBody]. The readout HTML goes into .tipBody so the persistent ✕ survives each
+// re-render (innerHTML on #tip itself would wipe it). ✕ only shows in pinned mode (CSS).
+const tipClose=document.createElement("button");
+tipClose.className="tipClose"; tipClose.textContent="✕"; tipClose.setAttribute("aria-label","Close readout");
+tipClose.onclick=e=>{ e.stopPropagation(); hideTip(); };
+const tipBody=document.createElement("div"); tipBody.className="tipBody";
+tip.append(tipClose,tipBody);
+// Pin the readout (vs. follow the cursor) on touch/phone: coarse pointer OR the mobile layout width.
+// Re-evaluated per readout so a resize across the breakpoint switches behaviour without reload.
+const pinMode=()=> matchMedia("(pointer:coarse)").matches || matchMedia("(max-width:640px)").matches;
+const COMPASS=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+const compass=d=>COMPASS[Math.round(((d%360)+360)%360/22.5)%16];
+const beauF=kmh=>{ let f=0; while(f<W_EDGES.length && kmh>=W_EDGES[f]) f++; return f; };
+function row(k,v){ return `<div><span class="k">${k}:</span> ${v}</div>`; }
+/* Snap radius for the readout. 0.016° ≈ 0.7 of the 0.0225° grid cell: any point ON a cell is
+   within 0.0135° (half-diagonal, lon cos-scaled) of its centre, so on-map taps always hit a
+   cell without snapping kilometres away. */
+const SNAP_DEG=0.016;
+function nearestCell(t,lat,lon,maxDeg){
+  let best=-1, bd=maxDeg*maxDeg, cosm=Math.cos(lat*Math.PI/180);
+  for(let i=0;i<t.ne;i++){ const dlo=(t.cx[i]-lon)*cosm, dla=t.cy[i]-lat, d=dlo*dlo+dla*dla;
+    if(d<bd){ bd=d; best=i; } }
+  return best;
+}
+let hoverLL=null, hoverEv=null, hoverRAF=0;
+function onHover(e){ hoverLL=e.latlng; hoverEv=e.originalEvent; if(!hoverRAF) hoverRAF=requestAnimationFrame(doHover); }
+function hideTip(){ hoverLL=null; tip.style.display="none"; tip.classList.remove("pinned"); }
+// Re-run the readout at the last-pointed spot after the data underneath it changes (hour scrub)
+// so a pinned panel refreshes in place instead of showing stale numbers.
+function refreshTip(){ if(hoverLL && tip.style.display!=="none") doHover(); }
+function doHover(){
+  hoverRAF=0; if(!hoverLL) return;
+  const lat=hoverLL.lat, lon=hoverLL.lng; let html=null;
+  if(windTile&&windTile.ready){
+    decodeTile(windTile); const t=windTile, m=nearestCell(t,lat,lon,SNAP_DEG);
+    if(m>=0 && !isNaN(t.spd[m])){
+      html=`<b>Wind</b>`
+        +row("Speed", `${Math.round(t.spd[m])} km/h · ${Math.round(t.spd[m]/1.852)} kt · F${beauF(t.spd[m])}`)
+        +row("From", `${compass(t.dir[m])} (${Math.round(t.dir[m])}°)`);
+    }
+  }
+  if(!html){ hideTip(); return; }
+  tipBody.innerHTML=html; tip.style.display="block";
+  if(pinMode()){
+    // pinned to the bottom of the viewport by CSS; clear any leftover follow-position inline styles
+    tip.classList.add("pinned"); tip.style.left=tip.style.top="";
+    return;
+  }
+  tip.classList.remove("pinned");
+  const pad=14, ev=hoverEv, tw=tip.offsetWidth, th=tip.offsetHeight;
+  let x=ev.clientX+pad, y=ev.clientY+pad;
+  if(x+tw>innerWidth-6) x=ev.clientX-pad-tw;
+  if(y+th>innerHeight-6) y=ev.clientY-pad-th;
+  tip.style.left=Math.max(4,x)+"px"; tip.style.top=Math.max(4,y)+"px";
+}
+// Desktop = cursor-follow tip driven by mousemove; touch = tap-driven pinned panel. On touch the
+// readout must NOT react to the mousemove/mouseout iOS synthesises around a tap, or the panel flashes
+// open and shut in <0.2 s (it appears on the tap's `click`, then a stray emulated mouseout/mousemove
+// immediately calls hideTip). In pinMode() we therefore ignore those and dismiss only on explicit
+// intent: the ✕, a tap that resolves to no data (handled in doHover), or a real pan/zoom gesture.
+map.on("mousemove",e=>{ if(!pinMode()) onHover(e); });
+map.on("mouseout", ()=>{ if(!pinMode()) hideTip(); });
+map.on("click",onHover);            // tap readout on touch devices
+map.on("dragstart zoomstart",hideTip);   // a genuine drag/zoom gesture — NOT the incidental movestart/inertia that follows a tap
+
+/* ===================== offline data store =====================
+   Modeled on the phone-proven unified-map / hrdps-wind-map offline manager. The saved pack lives
+   in Cache Storage "coastwind-data-v1" — which sw.js never versions or deletes, so it survives
+   shell updates — under synthetic ./__offline__/ URLs:
+     man/hrdps.json   — the manifest the bin below was fetched WITH
+     bin/wind         — the whole-coast wind bin (coast-overview)
+   COHERENCE RULE: the bin is only ever written together with the manifest it was fetched against,
+   and the cached tile is built on ITS OWN pack's hour axis — so a saved pack can never be indexed
+   on the wrong axis (silent wrong forecast); at worst it shrinks the timeline via adoptAxis().
+   Bin bodies are stored as fetched (possibly gzip-on-wire); the loader's existing 1f 8b magic-byte
+   check inflates either form. A localStorage mirror of the index detects iOS purging the cache
+   (index says "saved", cache says "gone" → eviction warning + clear). */
+const DATA_CACHE="coastwind-data-v1", OKEY="./__offline__/", LS_INDEX="cw_offline_index";
+const FORCE_OFFLINE=new URLSearchParams(location.search).get("offline")==="1";  // ?offline=1 = desktop airplane-mode sim
+if(FORCE_OFFLINE){ // Block cross-origin fetch() only (R2 data): the same-origin shell comes from the
+  // SW cache, mirroring airplane mode. NOTE basemap tiles are <img>, not fetch(), so they are NOT
+  // blocked here — only real airplane mode shows the blank-basemap state (overlays-offline-only v1).
+  const realFetch=window.fetch.bind(window);
+  window.fetch=(u,o)=>{ const s=String((u&&u.url)||u);
+    return (s.startsWith("http")&&!s.startsWith(location.origin)) ? Promise.reject(new TypeError("Simulated offline")) : realFetch(u,o); };
+  // make test mode unmissable — a simulated outage must never look like a real one
+  const tb=document.createElement("div");
+  tb.style.cssText="background:#fff7ed;border:2px solid #b45309;color:#b45309;font-size:14px;font-weight:700;padding:10px 14px;border-radius:10px;margin-bottom:10px;flex:0 0 auto";
+  tb.innerHTML='⚠ OFFLINE TEST MODE — a simulation, not a real outage. <a href="./" style="color:#b45309">Tap for live data</a>.';
+  document.querySelector("main").prepend(tb);
+}
+const isOnline=()=>!FORCE_OFFLINE && navigator.onLine!==false;
+let evictionNote=null;                     // set when the OS purged a saved copy, so offline errors explain why
+const dataSrc={wind:null};        // "live" | "cache" — provenance of the painted wind field
+const manSrc={wm:null};           // provenance of the manifest adopted at boot
+
+function netFetch(url, ms){   // fail-fast offline; abort on timeout so one-bar signal can't hang a refresh
+  if(!isOnline()) return Promise.reject(new Error("offline"));
+  const ac=new AbortController(), t=setTimeout(()=>ac.abort(), ms||15000);
+  return fetch(url,{cache:"no-store",signal:ac.signal}).then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r; })
+         .finally(()=>clearTimeout(t));
+}
+const dstore=()=>caches.open(DATA_CACHE);
+async function ocGetJSON(k){ try{ const r=await (await dstore()).match(OKEY+k); return r?await r.json():null; }catch(_){ return null; } }
+async function ocGetBytes(k){ try{ const r=await (await dstore()).match(OKEY+k); return r?new Uint8Array(await r.arrayBuffer()):null; }catch(_){ return null; } }
+async function ocPut(k,body,type){ await (await dstore()).put(OKEY+k, new Response(body,{headers:{"Content-Type":type||"application/octet-stream"}})); }
+async function haveCached(k){ try{ return !!(await (await dstore()).match(OKEY+k)); }catch(_){ return false; } }
+function lsIndex(){ try{ return JSON.parse(localStorage.getItem(LS_INDEX))||{}; }catch(_){ return {}; } }
+function lsIndexSet(ix){ try{ localStorage.setItem(LS_INDEX, JSON.stringify(ix)); }catch(_){} }
+function noteEviction(what, clear){        // index says saved, cache says gone → iOS storage pressure
+  evictionNote="⚠ The saved offline copy ("+what+") was removed by the system (storage pressure) — connect and tap “⬇ Save offline” again.";
+  const ix=lsIndex(); clear(ix); lsIndexSet(ix); refreshOfflineUI();
+}
+async function dlProgress(url, name, ms){  // stream a .bin so slow links show KB progress; returns WIRE bytes
+  const resp=await netFetch(url, ms||180000);
+  if(!resp.body||!resp.body.getReader) return new Uint8Array(await resp.arrayBuffer());
+  const rd=resp.body.getReader(), chunks=[]; let got=0, shown=0;
+  for(;;){ const {done,value}=await rd.read(); if(done) break;
+    chunks.push(value); got+=value.length;
+    if(got-shown>131072){ shown=got; setStatus(`Downloading ${name}… ${Math.round(got/1024)} KB`); } }
+  const out=new Uint8Array(got); let o=0; for(const c of chunks){ out.set(c,o); o+=c.length; }
+  return out;
+}
+// Shrink the master timeline to a cached pack's hour axis. Every loaded tile keeps its OWN hourOf;
+// TIMES ⊆ every loaded axis is the invariant that keeps makeHourOf from ever throwing (or worse,
+// silently reading another run's hours).
+function adoptAxis(hoursMs){
+  const t2=inter(TIMES,hoursMs);
+  if(!t2.length){ setStatus("Saved packs share no forecast hours — connect and re-save together.",true); return false; }
+  if(t2.length!==TIMES.length || t2[0]!==TIMES[0]){
+    TIMES=t2; $("time").max=TIMES.length-1;
+    $("timeCap").textContent=`Forecast timeline (${TIMES.length-1} h)`;
+    if(windTile) windTile.decodedHour=-1;
+    setHour(Math.min(hour,TIMES.length-1));
+  }
+  return true;
+}
+
+async function saveOffline(){
+  const b=$("saveBtn"); b.disabled=true; b.textContent="Saving…";
+  try{
+    setStatus("Saving for offline — fetching index…");
+    // Fresh manifest = the snapshot the bin written below is paired with.
+    const wm=await netFetch(R2+"/hrdps/manifest.json",15000).then(r=>r.json());
+    const ix=lsIndex();
+    if(!(ix.base && ix.base.runWind===wm.run && await haveCached("bin/wind"))){
+      const wire=await dlProgress(R2+"/hrdps/coast-overview.bin","coast wind");
+      await ocPut("bin/wind",wire); await ocPut("man/hrdps.json",JSON.stringify(wm),"application/json");
+    }
+    ix.base={savedAt:Date.now(),runWind:wm.run};
+    lsIndexSet(ix); evictionNote=null;
+    if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});  // ask iOS not to evict
+    setStatus("Saved for offline: whole-coast wind. Kept current automatically whenever you open the map online; ↻ Refresh checks by hand.");
+  }catch(e){ setStatus(isOnline()?"Save failed: "+e.message:"No connection — connect to wifi to save.",true); }
+  refreshOfflineUI(); updateStale();
+}
+async function refreshNow(){   // manifest first (~5 KB); re-download only when the run is newer
+  const b=$("refreshBtn"); b.disabled=true; b.textContent="Checking…";
+  try{
+    const ix=lsIndex();
+    if(!ix.base){ location.reload(); return; }           // nothing saved: plain reload
+    const wm=await netFetch(R2+"/hrdps/manifest.json",12000).then(r=>r.json());
+    let changed=false;
+    if(ix.base.runWind!==wm.run || !await haveCached("bin/wind")){
+      const wire=await dlProgress(R2+"/hrdps/coast-overview.bin","coast wind");
+      await ocPut("bin/wind",wire); await ocPut("man/hrdps.json",JSON.stringify(wm),"application/json"); changed=true; }
+    ix.base={savedAt:Date.now(),runWind:wm.run};
+    lsIndexSet(ix); evictionNote=null;
+    if(changed) location.reload();                       // re-boot on the fresh pack (URL keeps the view)
+    else { setStatus("Up to date — the saved pack is on the latest run.");
+           b.disabled=false; b.textContent="↻ Refresh"; refreshOfflineUI(); updateStale(); }
+  }catch(e){
+    setStatus(isOnline()?"Refresh failed ("+e.message+") — keeping the saved data.":"No connection — keeping the saved data.",true);
+    b.disabled=false; b.textContent="↻ Refresh";
+  }
+}
+/* Freshness banner (persistent, re-aged every 60 s): HRDPS runs 4×/day, so the clock keeps the
+   wind map's proven bands (green <12 h / amber 12–24 / red >24). The chip says "saved" when the
+   painted field came from the offline store rather than the network. */
+function updateStale(){
+  const el=$("stale"); if(!el) return;
+  const chip=(lbl,run,src,aH,rH)=>{ const ageH=(Date.now()-new Date(run).getTime())/3.6e6;
+    const cls=ageH>rH?"red":ageH>aH?"amber":"ok";
+    return `<span class="clk ${cls}">${lbl} run ${Math.round(ageH)} h ago${src==="cache"?" · saved":""}</span>`; };
+  const parts=[];
+  if(RUN_WIND && dataSrc.wind) parts.push(chip("wind",RUN_WIND,dataSrc.wind,12,24));
+  if(!isOnline()) parts.push('<span class="offnote">offline — basemap needs network</span>');
+  el.innerHTML=parts.join(" ");
+  el.style.display=parts.length?"inline-flex":"none";
+}
+setInterval(updateStale,60000);   // re-age the banner while the app sits open
+function refreshOfflineUI(){
+  const s=$("saveBtn"); if(!s) return;
+  const ix=lsIndex();
+  s.disabled=!!ix.base;
+  s.textContent=ix.base ? "✓ Saved for offline" : "⬇ Save offline (whole-coast wind)";
+  $("savedList").textContent=ix.base ? "Saved: whole-coast wind" : "";
+}
+/* ============================================================================================= */
+
+let windMan=null, hour=0, TIMES=[], anim=null;
+let RUN_WIND=null;
+async function gunzip(u8){ const ds=new DecompressionStream('gzip'); return new Uint8Array(await new Response(new Response(u8).body.pipeThrough(ds)).arrayBuffer()); }
+
+/* ---------- hour axis ----------
+   TIMES is the manifest's hour instants in epoch ms. With one dataset it only ever differs from
+   the tile's own axis when a SAVED pack (older run) replaces a live fetch — adoptAxis() then
+   shrinks TIMES to the pack's axis. The tile maps a master index into its own hour index by
+   exact ms lookup; no nearest-hour fuzz, no silent clamping. */
+const inter=(a,b)=>{ const s=new Set(b); return a.filter(x=>s.has(x)); };
+function makeHourOf(hoursMs){
+  const m=new Map(hoursMs.map((v,i)=>[v,i]));
+  return h=>{ const i=m.get(TIMES[h]);
+    if(i===undefined) throw new Error("hour "+new Date(TIMES[h]).toISOString()+" missing from tile axis");
+    return i; };
+}
+const isoToMs=s=>new Date(s).getTime();
+
+function loadedSummary(){
+  const age=r=>Math.round((Date.now()-new Date(r).getTime())/3.6e6);
+  return `HRDPS 2.5 km wind · run ${PTL.format(new Date(RUN_WIND))} (${age(RUN_WIND)} h ago) · Puget Sound → Dixon Entrance`;
+}
+// Decode the tile's current hour into spd/dir (arrows) + spd3 (GL). Lazy + cached per hour.
+// spdScale converts the speed byte to the unit: wind km/h = byte (spdScale 1).
+function decodeTile(t){
+  const hi=t.hourOf(hour);
+  if(t.decodedHour===hi) return; t.decodedHour=hi;
+  const n=t.ne, span=t.span, vel=t.vel, vpe=t.vpe, sc=t.spdScale;
+  const sBase=hi*2*span, dBase=sBase+span;
+  for(let i=0;i<n;i++){ const s=vel[sBase+i];
+    t.spd[i]=(s===255)?NaN:s*sc; t.dir[i]=vel[dBase+i]*360/255; }
+  for(let i=0;i<n;i++){ const s=t.spd[i], v=(s!==s)?DRY:s, b=i*vpe; for(let k=0;k<vpe;k++) t.spd3[b+k]=v; }
+  if(gl){ gl.bindBuffer(gl.ARRAY_BUFFER,t.spdBuf); gl.bufferData(gl.ARRAY_BUFFER,t.spd3,gl.DYNAMIC_DRAW); }
+}
+let windLoading=null;
+const loadWind=()=>windLoading||(windLoading=loadWindOnce());   // ~8 MB: never fetch it twice
+async function loadWindOnce(){
+  // Live-first with saved-pack fallback; write-through keeps a saved pack current.
+  let bytes=null, wman=windMan, src="live";
+  const ix=lsIndex();
+  if(manSrc.wm==="live" && ix.base && windMan && ix.base.runWind===windMan.run)
+    bytes=await ocGetBytes("bin/wind");                        // saved copy IS the latest run
+  // Live-manifest guard: a live bin indexed on a cached (older-run) manifest's axis could
+  // misalign silently — the pack fallback below is always coherent.
+  if(!bytes && isOnline() && manSrc.wm==="live"){
+    try{
+      setStatus("Loading whole-coast HRDPS wind (~8 MB)…");
+      const wire=new Uint8Array(await (await netFetch(R2+"/hrdps/coast-overview.bin",180000)).arrayBuffer());
+      bytes=wire;
+      if(ix.base) ocPut("bin/wind",wire)                       // write-through (wire body, pre-gunzip)
+        .then(()=>ocPut("man/hrdps.json",JSON.stringify(windMan),"application/json"))
+        .then(()=>{ const x=lsIndex(); if(x.base){ x.base.runWind=windMan.run; lsIndexSet(x); refreshOfflineUI(); } })
+        .catch(()=>{});
+    }catch(_){ bytes=null; }
+  }
+  if(!bytes){                                                  // offline or fetch failed: saved pack
+    const pm=await ocGetJSON("man/hrdps.json"); bytes=await ocGetBytes("bin/wind");
+    if(!pm || !bytes){
+      if(ix.base) noteEviction("wind overview",x=>{ delete x.base; });
+      throw new Error(evictionNote||"offline — no saved base pack. Connect once and tap “⬇ Save offline”.");
+    }
+    wman=pm; src="cache"; RUN_WIND=wman.run;
+    if(!adoptAxis(wman.hours.map(isoToMs))) throw new Error("saved packs share no forecast hours");
+  }
+  const ov=wman.regions["coast-overview"];
+  if(!ov) throw new Error("no 'coast-overview' region in the HRDPS manifest — update + run hrdps-ingest first");
+  if(bytes[0]===0x1f&&bytes[1]===0x8b) bytes=await gunzip(bytes);
+  const cols=ov.cols, rows=ov.rows, span=cols*rows, nh=wman.hours.length;
+  if(bytes.length!==nh*2*span) throw new Error(`wind tile is ${bytes.length} B, expected ${nh*2*span}`);
+  const ne=span;                                  // HRDPS covers land too: every cell is a quad
+  const t={key:"wind",bbox:ov.bbox,vpe:6,ready:false,decodedHour:-1,ne,span,spdScale:1,
+           vel:bytes,cx:new Float32Array(ne),cy:new Float32Array(ne),
+           spd:new Float32Array(ne),dir:new Float32Array(ne),spd3:new Float32Array(ne*6)};
+  t.hourOf=makeHourOf(wman.hours.map(isoToMs));   // the PAIRED manifest's axis
+  buildFieldQuads(t,cols,rows,null);
+  dataSrc.wind=src;
+  t.ready=true; windTile=t; render(); setStatus(loadedSummary()); updateStale();
+}
+
+function setStatus(m,err){ const e=$("status"); e.textContent=m; e.className="status"+(err?" err":""); }
+
+// Beaufort colour chips at a given fill alpha. withNames = full (wind mode); compact = key only (rings).
+function beaufortKey(alpha,withNames){
+  let s="";
+  for(let f=0;f<=9;f++){
+    const ktl = f===0 ? "calm" : `${kt(W_EDGES[f-1])}${f<W_EDGES.length?"–"+kt(W_EDGES[f]-1):"+"} kt`;
+    const name = withNames ? " "+W_NAMES[f] : "";
+    s+=`<span class="lchip"><i class="lsw" style="background:${blend(W_COL[f],GRAY_LAND,alpha)}"></i>F${f}${name} · ${ktl}</span>`;
+  }
+  s+=`<span class="lchip"><i class="lsw" style="background:${blend(W_COL[10],GRAY_LAND,alpha)}"></i>F10+${withNames?" Storm":""}</span>`;
+  return s;
+}
+function buildLegend(){
+  $("legend").innerHTML='<span class="lchip" style="font-weight:600">Wind (Beaufort):</span>'+beaufortKey(MODES.wind.alpha,true);
+}
+const NOTES={
+  wind:"HRDPS 2.5 km whole-coast field — Puget Sound → Dixon Entrance including all of Haida Gwaii — one resolution at every zoom (there is no finer wind tile). Arrows point <b>downwind</b> (the model stores the direction the wind blows <i>from</i>). Wind is drawn over land as well as water; place names and coastline are drawn on top. Beaufort bins match the unified marine map and the standalone wind map exactly.",
+};
+function buildBaseSelect(){
+  const md=MODES[mode], sel=$("base");
+  // wind leads with the plain coastline (md.base==="gray").
+  const order = md.base==="gray" ? ["gray","topo","imagery"] : ["usgs","topo","imagery"];
+  sel.innerHTML="";
+  for(const k of order){ const o=document.createElement("option"); o.value=k; o.textContent=BASES[k].name;
+    if(k===(basePref[mode]||md.base)) o.selected=true; sel.appendChild(o); }
+}
+const basePref={};                        // remember the user's base choice per mode
+/* Fill opacity. MODES[mode].alpha is the ONE source of truth: applyModeGL() pushes it to the shader
+   as uAlpha, and buildLegend() blends every swatch over the base at the same alpha. Moving the
+   slider therefore keeps the key honest by construction — a swatch always shows the colour as it
+   actually lands on the map. Only the swatch background is tinted; chip text stays fully opaque.
+   Default 0.72. */
+function syncOpacityUI(){
+  const a=getAlpha();
+  $("opacity").value=a; $("opacityVal").textContent=Math.round(a*100)+"%";
+}
+const clampAlpha=a=>Math.min(1,Math.max(0.2,a));
+function setAlpha(a){
+  setActiveAlpha(a);
+  syncOpacityUI(); applyModeGL(); buildLegend(); render(); updateURL();
+}
+
+function setHour(x){
+  hour=Math.max(0,Math.min(TIMES.length-1,x)); $("time").value=hour;
+  $("timeLabel").textContent=TIMES.length?PTL.format(new Date(TIMES[hour]))+" (+"+hour+"h)":"";
+  render(); updateURL(); refreshTip();      // scrubbed to a new hour → refresh a pinned readout in place
+}
+
+/* ---------- bookmarkable view: ?lat=&lon=&z=&h=&a= ---------- */
+let urlTimer=null;
+function updateURL(){
+  clearTimeout(urlTimer);
+  urlTimer=setTimeout(()=>{
+    const c=map.getCenter();
+    // `a` is the ACTIVE mode's fill opacity: each mode keeps its own, and a link only ever restores
+    // the one it was shared in. The other modes fall back to their defaults.
+    const p={lat:c.lat.toFixed(4),lon:c.lng.toFixed(4),z:map.getZoom(),h:hour,a:getAlpha().toFixed(2)};
+    history.replaceState(null,"","?"+new URLSearchParams(p));
+  },250);
+}
+function applyURL(){
+  // reads the script-time URL_VIEW capture, NOT location.search: by the time boot()'s manifests
+  // land, updateURL() has usually rewritten the query string already (see URL_VIEW).
+  const v=URL_VIEW.view;
+  if(v) map.setView([v.lat,v.lon],Math.max(v.z,map.getMinZoom()));
+  return URL_VIEW.h;
+}
+map.on("moveend zoomend",updateURL);
+
+// Region select = navigation shortcut; tile loading is automatic from the viewport.
+{ const o=document.createElement("option"); o.value=-1; o.textContent="Full coast (overview)"; $("region").appendChild(o); }
+REGIONS.forEach((r,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=r[0]; $("region").appendChild(o); });
+$("region").onchange=e=>{ hideTip(); const i=+e.target.value;   // jumping regions no longer auto-hides via movestart
+  if(i<0) map.fitBounds(FULL_EXTENT);
+  else { const r=REGIONS[i]; map.setView(r[1], r[2]); } };
+$("base").onchange=e=>{ basePref[mode]=e.target.value; setBase(e.target.value); };
+$("arrows").onchange=render;
+$("opacity").oninput=e=>setAlpha(+e.target.value);
+$("time").oninput=e=>setHour(+e.target.value);
+$("playBtn").onclick=()=>{ if(anim){clearInterval(anim);anim=null;$("playBtn").textContent="▶";} else {$("playBtn").textContent="⏸";anim=setInterval(()=>setHour(hour>=TIMES.length-1?0:hour+1),400);} };
+// Phone hour-steppers (setHour clamps to [0, TIMES.length-1]); stop any animation first in
+// case the viewport crossed the breakpoint mid-play.
+const stepHour=d=>{ if(anim){clearInterval(anim);anim=null;$("playBtn").textContent="▶";} setHour(hour+d); };
+$("stepBack").onclick=()=>stepHour(-1);
+$("stepFwd").onclick=()=>stepHour(1);
+$("saveBtn").onclick=saveOffline; $("refreshBtn").onclick=refreshNow;
+refreshOfflineUI();
+
+{ const a=parseFloat(new URLSearchParams(location.search).get("a"));
+  if(isFinite(a)) setActiveAlpha(a); }
+// Phone: the Base map + Arrows controls are hidden (media block) — pin their values instead:
+// Esri terrain, densest arrow spacing (David's picks, 2026-07-22).
+if(matchMedia("(max-width:640px)").matches){ basePref.wind="topo"; $("arrows").value="12"; }
+syncOpacityUI(); buildLegend(); buildBaseSelect(); setBase($("base").value); $("note").innerHTML=NOTES[mode];
+
+/* ---------- phone layout DOM (pairs with the @media (max-width:640px) block) ----------
+   The CSS owns all sizing; only the two moves CSS can't express are done here: the header
+   description is hidden (one-line header) and the legend becomes a collapsible overlay
+   INSIDE #map with a ≥44px "Key" toggle. Both are reversed if the viewport crosses back
+   over the breakpoint, so the desktop DOM is untouched at ≥641px. */
+const mobileMQ=matchMedia("(max-width:640px)");
+const legendBtn=document.createElement("button");
+legendBtn.id="legendBtn"; legendBtn.textContent="Key";
+legendBtn.onclick=()=>{ const open=$("legend").classList.toggle("open"); legendBtn.textContent=open?"✕":"Key"; };
+// the overlay lives inside the map container: keep its taps/scrolls from panning the map under it
+L.DomEvent.disableClickPropagation(legendBtn);
+L.DomEvent.disableClickPropagation($("legend")); L.DomEvent.disableScrollPropagation($("legend"));
+const headerDesc=document.querySelector("header p");
+let mobileApplied=null;                                 // guard: only touch the DOM on a real crossing
+window.mobileLayout=function(){
+  const on=mobileMQ.matches; if(on===mobileApplied) return; mobileApplied=on;
+  if(on){ headerDesc.style.display="none"; $("map").append($("legend"),legendBtn); }
+  else { headerDesc.style.display=""; $("map").before($("legend")); legendBtn.remove(); }
+  map.invalidateSize({animate:false});
+};
+mobileLayout();
+// crossings are also picked up by onViewportChange (debounced resize path) — this direct listener
+// just makes the switch immediate when the browser delivers the media-query change event
+mobileMQ.addEventListener("change",mobileLayout);
+
+if(initGL()) boot();
+
+async function boot(){
+  try{
+    // Manifest first (small); the wind BINARY follows in loadWind. Live with a saved fallback:
+    // an airplane-mode relaunch boots from the saved pack instead of blank-screening; netFetch's
+    // timeout keeps one-bar signal from hanging the boot. manSrc records the source.
+    let wm;
+    try{ wm=await (await netFetch(R2+"/hrdps/manifest.json",12000)).json(); manSrc.wm="live"; }
+    catch(e){ wm=await ocGetJSON("man/hrdps.json"); if(wm) manSrc.wm="cache"; else throw e; }
+    windMan=wm; RUN_WIND=wm.run;
+    if(!wm.regions["coast-overview"])
+      throw new Error('no "coast-overview" region in the HRDPS manifest — update + run hrdps-ingest first');
+    TIMES=wm.hours.map(isoToMs);
+    $("time").max=TIMES.length-1;
+    $("timeCap").textContent=`Forecast timeline (${TIMES.length-1} h)`;
+    const h=applyURL();
+    setHour(isFinite(h)?h:0);
+    refreshOfflineUI();
+    await loadWind();
+    updateStale();
+  }catch(e){
+    setStatus(isOnline() ? "Failed: "+e.message
+      : (evictionNote||"Offline — nothing saved yet. Connect once and tap “⬇ Save offline”."), true);
+  }
+}
+/* PWA: register the app-shell service worker (skips file:// where SW is unavailable).
+   Named coast_sw.js — NOT sw.js — so the cape working copy can serve this app and the
+   unified map from one local origin without the two shells overwriting each other. */
+if("serviceWorker" in navigator && location.protocol.startsWith("http"))
+  addEventListener("load",()=>{ navigator.serviceWorker.register("coast_sw.js").catch(()=>{}); });
+</script>
+</body>
+</html>
