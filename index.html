@@ -29,7 +29,7 @@
   #mode{font-weight:600}
   #opacity{width:130px;margin:9px 0} #opacityVal{color:var(--ink);font-weight:700}
   /* the ± nudge buttons flanking the opacity slider are phone-only (see the media block) */
-  .oprow{display:flex;align-items:center;gap:6px} #opDown,#opUp{display:none}
+  .oprow{display:flex;align-items:center;gap:6px} #opDown,#opUp,#arrowsTgl{display:none}
   /* iOS read a quick second tap on a control (the opacity ±, mostly) as double-tap-to-zoom. That
      page-zooms the fixed 100dvh phone layout, and because every pinch inside #map is captured by
      Leaflet there is then no way to pinch back out — the map looks frozen. `manipulation` drops
@@ -91,10 +91,17 @@
     .fld label{font-size:11px}
     .fld select{width:100%;min-height:44px;padding:6px 8px}
     .chk input{width:22px;height:22px}
-    /* ± nudge buttons flank the slider: a 5-point tap beats a wet-finger drag on a 26px thumb */
+    /* ± nudge buttons flank the slider: a 5-point tap beats a wet-finger drag on a 26px thumb.
+       The field takes a whole row so the ± and the arrows toggle never squeeze the slider. */
+    #opFld{flex:1 1 100%}
     .oprow{width:100%;gap:8px}
     #opDown,#opUp{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
          min-width:44px;min-height:44px;padding:0;font-size:20px;font-weight:700;line-height:1}
+    /* arrows on/off lives here because the Arrows density select is hidden on the phone (below);
+       it drives the SAME #arrows select, flipping between Off and the last density used */
+    #arrowsTgl{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;gap:4px;
+         min-width:44px;min-height:44px;padding:0 8px;font-size:13px;font-weight:700;line-height:1}
+    #arrowsTgl[aria-pressed="false"]{color:var(--muted);background:#eef1f5}
     #opacity{flex:1 1 auto;width:auto;min-width:0;height:32px;margin:2px 0}
     .timewrap{flex:1 1 100%;min-width:0}
     #time{height:44px}
@@ -142,7 +149,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22e (Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
+  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
 </header>
 <main>
   <div class="bar">
@@ -150,13 +157,14 @@
     <div class="fld" id="baseFld"><label for="base">Base map</label><select id="base"></select></div>
     <div class="fld" id="arrowsFld"><label for="arrows">Arrows</label>
       <select id="arrows"><option value="0">Off</option><option value="26">Normal</option><option value="18" selected>Dense</option><option value="12">Denser</option></select></div>
-    <div class="fld"><label for="opacity">Fill opacity <span id="opacityVal"></span></label>
+    <div class="fld" id="opFld"><label for="opacity">Fill opacity <span id="opacityVal"></span></label>
       <!-- step 0.01: the default (0.72) must be exactly representable or the thumb
            snaps to a neighbouring step and jumps on the first drag -->
       <div class="oprow">
         <button id="opDown" type="button" title="Less fill opacity" aria-label="Less fill opacity">−</button>
         <input type="range" id="opacity" min="0" max="1" step="0.01" title="Opacity of the coloured fill; the legend swatches follow it">
         <button id="opUp" type="button" title="More fill opacity" aria-label="More fill opacity">+</button>
+        <button id="arrowsTgl" type="button" aria-pressed="true">➤ On</button>
       </div></div>
     <div class="timewrap"><label for="time" id="timeCap">Forecast timeline</label>
       <div class="row"><button id="playBtn">▶</button><button id="stepBack" title="Back one hour">◀</button><button id="stepFwd" title="Forward one hour">▶</button><input type="range" id="time" min="0" max="48" value="0"><span id="timeLabel"></span></div>
@@ -803,13 +811,26 @@ $("region").onchange=e=>{ hideTip(); const i=+e.target.value;   // jumping regio
   if(i<0) map.fitBounds(FULL_EXTENT);
   else { const r=REGIONS[i]; map.setView(r[1], r[2]); } };
 $("base").onchange=e=>{ basePref[mode]=e.target.value; setBase(e.target.value); };
-$("arrows").onchange=render;
+$("arrows").onchange=()=>{ rememberTp(); syncArrowsTgl(); render(); };
 $("opacity").oninput=e=>setAlpha(+e.target.value);
-/* phone ± buttons: 5-point nudges, clamped to the same 0.2–1 range as the slider. toFixed(2) keeps
+/* phone ± buttons: 5-point nudges, clamped to the same 0–1 range as the slider. toFixed(2) keeps
    the value on the 0.01 step grid so the thumb never lands between steps and jumps on the next drag. */
 const nudgeAlpha=d=>setAlpha(clampAlpha(+(getAlpha()+d).toFixed(2)));
 $("opDown").onclick=()=>nudgeAlpha(-0.05);
 $("opUp").onclick=()=>nudgeAlpha(0.05);
+/* Phone arrows on/off. The Arrows density select is hidden on the phone, so this button IS the
+   arrows control there: it flips #arrows between "0" (Off) and the last density that was in use,
+   then goes through the same render path. Desktop keeps the dropdown (its Off option is this). */
+let lastArrowTp=+$("arrows").value>0?$("arrows").value:"12";
+const rememberTp=()=>{ if(+$("arrows").value>0) lastArrowTp=$("arrows").value; };
+function syncArrowsTgl(){
+  const on=+$("arrows").value>0, b=$("arrowsTgl");
+  b.setAttribute("aria-pressed",on?"true":"false");
+  b.textContent=on?"➤ On":"➤ Off";
+  b.title=on?"Turn the arrows off":"Turn the arrows on";
+  b.setAttribute("aria-label",b.title);
+}
+$("arrowsTgl").onclick=()=>{ const s=$("arrows"); rememberTp(); s.value=+s.value>0?"0":lastArrowTp; syncArrowsTgl(); render(); };
 $("time").oninput=e=>setHour(+e.target.value);
 $("playBtn").onclick=()=>{ if(anim){clearInterval(anim);anim=null;$("playBtn").textContent="▶";} else {$("playBtn").textContent="⏸";anim=setInterval(()=>setHour(hour>=TIMES.length-1?0:hour+1),400);} };
 // Phone hour-steppers (setHour clamps to [0, TIMES.length-1]); stop any animation first in
@@ -825,6 +846,7 @@ refreshOfflineUI();
 // Phone: the Base map + Arrows controls are hidden (media block) — pin their values instead:
 // Esri terrain, densest arrow spacing (David's picks, 2026-07-22).
 if(matchMedia("(max-width:640px)").matches){ basePref.wind="topo"; $("arrows").value="12"; }
+rememberTp(); syncArrowsTgl();
 syncOpacityUI(); buildLegend(); buildBaseSelect(); setBase($("base").value); $("note").innerHTML=NOTES[mode];
 
 /* ---------- phone layout DOM (pairs with the @media (max-width:640px) block) ----------
@@ -880,10 +902,22 @@ async function boot(){
   }
 }
 /* PWA: register the app-shell service worker (skips file:// where SW is unavailable).
-   Named coast_sw.js — NOT sw.js — so the cape working copy can serve this app and the
-   unified map from one local origin without the two shells overwriting each other. */
-if("serviceWorker" in navigator && location.protocol.startsWith("http"))
-  addEventListener("load",()=>{ navigator.serviceWorker.register("coast_sw.js").catch(()=>{}); });
+   The script is named coast_sw.js — NOT sw.js — so the two shells never overwrite each other's
+   CACHE. That is not enough on the cape working copy, though: this map and the unified map are
+   served from ONE directory there, so both workers register on scope "/", and a scope holds
+   exactly one registration. Whichever map you opened last ends up controlling the other and
+   answering its requests cache-first out of a foreign shell. So DEV ORIGINS ARE EXCLUDED below.
+   Deployed the two apps sit on separate paths, so their scopes never meet — no-op there.
+   `?sw=1` opts back in when the offline path itself is what's being tested locally. */
+const DEV_ORIGIN=/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+if("serviceWorker" in navigator && location.protocol.startsWith("http")){
+  if(DEV_ORIGIN && !new URLSearchParams(location.search).has("sw"))
+    // also tear down anything a previous local visit left controlling this origin, so a machine
+    // already stuck in the crossed state heals on the next load instead of needing DevTools
+    navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())).catch(()=>{});
+  else
+    addEventListener("load",()=>{ navigator.serviceWorker.register("coast_sw.js").catch(()=>{}); });
+}
 </script>
 </body>
 </html>
