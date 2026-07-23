@@ -43,8 +43,16 @@
   .ovl{position:absolute;top:0;left:0;pointer-events:none}
   .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;align-items:center}
   .lchip{display:flex;align-items:center;gap:6px;font-size:11px;border:1px solid var(--line);border-radius:6px;padding:3px 7px;background:#fff}
-  .lsw{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.15)}
+  /* flex:0 0 auto — .lchip is a flex row, and without it a long note (the currents coverage chips)
+     shrinks the swatch to a sliver on a narrow phone. */
+  .lsw{flex:0 0 auto;width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.15)}
   .status{font-size:13px;color:var(--muted);margin-top:10px} .status.err{color:#b54708}
+  /* Label on the SSCOFS coverage boundary (Currents layer only). A Leaflet permanent tooltip, so it
+     lives in the tooltipPane (z 650) above the hatch; styled as a plain amber pill because the
+     default tooltip's white box + arrow reads as an interactive popup. */
+  .leaflet-tooltip.maskLbl{background:rgba(255,247,237,.95);border:1px solid #b45309;color:#8a4308;
+       font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;box-shadow:none;white-space:nowrap}
+  .leaflet-tooltip.maskLbl::before{display:none}   /* no callout arrow: it points at nothing here */
   .note{font-size:12px;color:var(--muted);margin-top:10px}
   .chk{flex-direction:row;align-items:center;gap:6px;padding-bottom:9px}
   .chk input{width:16px;height:16px} .chk label{color:var(--ink)}
@@ -149,10 +157,18 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One wind map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km, 4 runs/day, ~48 h timeline. Wind only — for currents and roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; HRDPS-only fork of the unified map: same phone layout, tap readout, offline save + staleness banner)</span></p>
+  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23a (new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
 </header>
 <main>
   <div class="bar">
+    <!-- Layer is the ONE control that must stay visible on the phone (it is the only way to reach
+         currents there), so it is deliberately absent from the #baseFld,#arrowsFld,#regionFld
+         hide list in the media block. -->
+    <div class="fld" id="modeFld"><label for="mode">Layer</label>
+      <select id="mode">
+        <option value="wind" selected>Wind (HRDPS 2.5 km)</option>
+        <option value="current">Currents (SSCOFS)</option>
+      </select></div>
     <div class="fld" id="regionFld"><label for="region">Region</label><select id="region"></select></div>
     <div class="fld" id="baseFld"><label for="base">Base map</label><select id="base"></select></div>
     <div class="fld" id="arrowsFld"><label for="arrows">Arrows</label>
@@ -185,23 +201,65 @@
 <script src="vendor/leaflet.js"></script>
 <script>
 const R2="https://pub-cb8eb71f75d64a57a0d021318ccd0ae7.r2.dev";
+const SSCOFS_URL="https://nvs.nanoos.org/WaysWaterMoves";
 const $=id=>document.getElementById(id);
-// [name, center, zoom] — navigation presets only: the wind field is ONE whole-coast tile at native
-// 2.5 km, so nothing loads per region (unlike the unified map's mesh tiles). North to Dixon Entrance.
+// Build flag for the whole SSCOFS currents port (mirrors the unified map's STEEP_ON): false gives
+// back the wind-only map with the Layer option hidden. Phases 1 (machinery) and 2 (coverage mask)
+// ship TOGETHER behind it — Coast_Currents_Plan.md is explicit that phase 1 on its own would
+// deploy exactly the blank-water-reads-as-slack layer phase 2 exists to prevent.
+const CURRENTS_ON = true;
+// [name, center, zoom, key, bbox W,S,E,N] — the 6 real bboxes are copied from
+// hrdps-ingest/sscofs_mesh.py REGIONS and must match it byte-for-byte.
+// key/bbox are NULL for the three regions SSCOFS has no mesh for: Haida Gwaii and Cape St James sit
+// outside the model entirely, and the outer west coast of Vancouver Island has overview data in a
+// coastal band only (no mesh region), so it falls back to the 0.02° overview at every zoom. EVERY
+// consumer of r[3]/r[4] must therefore tolerate null.
+// Order is coast NAVIGATION order (north→south), deliberately the reverse of the unified map's.
+// It doubles as element-ownership priority inside the 0.05° bbox overlaps (earlier region draws,
+// later skips) so translucent neighbours never double-blend into a dark seam; a different order
+// just moves which region owns a seam, and the owner is always loaded because loading is
+// viewport-driven off these same bboxes.
 const REGIONS=[
-  ["Haida Gwaii & Hecate",[52.6,-131.0],8],
-  ["Cape St James",[51.94,-131.01],10],
-  ["West Coast Vancouver I.",[49.4,-126.2],8],
-  ["Johnstone Str → QCS",[50.95,-127.7],10],
-  ["Broughtons & Discovery",[50.45,-125.9],10],
-  ["Northern Georgia Strait",[49.6,-124.4],10],
-  ["San Juan & Gulf Islands",[48.60,-123.1],10],
-  ["Juan de Fuca",[48.35,-124.35],10],
-  ["Puget Sound",[47.30,-122.55],11],
+  ["Haida Gwaii & Hecate",[52.6,-131.0],8,null,null],
+  ["Cape St James",[51.94,-131.01],10,null,null],
+  ["West Coast Vancouver I.",[49.4,-126.2],8,null,null],
+  ["Johnstone Str → QCS",[50.95,-127.7],10,"johnstone-qcs-south",[-129.0,50.7,-126.3,52.13]],
+  ["Broughtons & Discovery",[50.45,-125.9],10,"broughtons-discovery",[-127.6,50.15,-124.3,51.2]],
+  ["Northern Georgia Strait",[49.6,-124.4],10,"northern-georgia-strait",[-125.4,49.0,-123.4,50.2]],
+  ["San Juan & Gulf Islands",[48.60,-123.1],10,"san-juan-gulf-islands",[-123.95,48.3,-122.5,49.3]],
+  ["Juan de Fuca",[48.35,-124.35],10,"juan-de-fuca",[-125.3,48.0,-123.25,48.75]],
+  ["Puget Sound",[47.30,-122.55],11,"puget-sound",[-123.3,47.0,-122.2,48.4]],
 ];
+const MESH_ZOOM=10;                         // >= this: native mesh tiles; below: whole-coast overview
 // The coast-overview bbox in hrdps-ingest/ingest.py OVERVIEWS; keep in sync.
 const FULL_EXTENT=[[46.9,-133.6],[54.5,-122.0]];
 const DRY=-1000;                            // sentinel written into the GL speed buffer; always discarded
+
+/* ---------- SSCOFS coverage geometry (Coast_Currents_Plan.md §2.1) ----------
+   THE DOMAIN IS NOT THE BBOX. OVERVIEW_BBOX is a clip box; the data's western edge follows the
+   shelf break diagonally and ~72,000 km² of open Pacific sits inside the box carrying nothing. So
+   the mask and the tap readout key off MEASURED limits, never a bbox test. */
+// Pipeline sync only (hrdps-ingest/sscofs.py OVERVIEW_BBOX) — the CLIP BOX, not the domain.
+const SSCOFS_EXTENT=[-129.0,46.9,-122.0,52.13];
+// Measured off the live overview field (2026-07-23 09Z run, re-verified on the 09Z field the same
+// day): the northernmost row carrying any data, and the western data edge near that limit. The
+// domain TAPERS TO A CORNER in northern QCS — its northern limit is NOT a full-width line at the
+// bbox latitude, and a line at 52.13 would sit ~4 km north of the last data.
+const SSCOFS_LAT_MAX=52.09;
+const SSCOFS_EDGE_N=[ [51.45,-129.00], [51.83,-128.28], [51.85,-128.00], [52.09,-127.92] ];
+// Full measured western edge, 46.91N -> 52.09N (8 vertices, Douglas-Peucker @ 0.05 deg, worst error
+// 0.039 deg ~ 3 km). NOT used: the offshore gap is deliberately SILENT — no mask, no popup, no
+// status line west of the shelf edge (David's call, plan §0). Recorded so the measurement survives
+// if that is ever revisited:
+//   [46.91,-124.92] [47.69,-125.30] [48.13,-125.76] [50.43,-129.00]
+//   [51.45,-129.00] [51.83,-128.28] [51.85,-128.00] [52.09,-127.92]
+// These are MEASURED constants, not pipeline-derived: if NOAA extends the domain north, or
+// OVERVIEW_BBOX changes in sscofs.py, they go stale silently. Re-measure when either changes.
+
+// ---- Currents: kt bins (byte/10), arrows point the way the water goes (TOWARD) ----
+const CUR_EDGES=[1,2,3,4,5,7,9];
+const CUR_COL=["#3288bd","#66c2a5","#abdda4","#a6d96a","#fee08b","#fdae61","#f46d43","#d53e4f"];
+const CUR_LBL=["0–1","1–2","2–3","3–4","4–5","5–7","7–9","9+"];
 
 // ---- Wind: Beaufort km/h bins (byte = km/h), arrows point DOWNWIND (byte dir is FROM) ----
 // Edges/colours/names copied verbatim from hrdps_map.html so the two apps read identically.
@@ -210,23 +268,28 @@ const W_COL=["#dfeaf2","#bfe3ec","#a6dd9f","#d7e84f","#f3c44d","#f0893b","#e44f2
 const W_NAMES=["Calm","Light air","Light breeze","Gentle","Moderate","Fresh","Strong","Near gale","Gale","Strong gale","Storm","Violent storm","Hurricane"];
 const kt = k => Math.round(k/1.852);
 
+const BASE_WATER="#c9e2ee";            // approx. USGS base-map water, so the currents legend matches
 const GRAY_LAND="#f0efef";             // approx. Esri light-gray canvas, for the wind legend
 const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
 function blend(hex,overHex,a){ const c=hex2rgb(hex), w=hex2rgb(overHex);
   const m=k=>Math.round(255*(c[k]*a + w[k]*(1-a))); return `rgb(${m(0)},${m(1)},${m(2)})`; }
 
+// ownLabels = the base already bakes in city/place names; when true we must NOT add the separate
+// reference-labels overlay on top (it would double the labels — Esri reference over USGS/Esri-topo).
+// Ported from unified_map.html 657d01d, which this fork never picked up: the phone pins the base to
+// Esri terrain, so every phone user has been reading doubled city names.
 const BASES={
-  usgs:{name:"USGS topo",url:"https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",attr:"USGS The National Map"},
-  topo:{name:"Esri terrain",url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri"},
-  imagery:{name:"Satellite",url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri"},
-  gray:{name:"Plain coastline",url:"https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri"},
+  usgs:{name:"USGS topo",url:"https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",attr:"USGS The National Map",ownLabels:true},
+  topo:{name:"Esri terrain",url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri",ownLabels:true},
+  imagery:{name:"Satellite",url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri",ownLabels:false},
+  gray:{name:"Plain coastline",url:"https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",attr:"Tiles © Esri",ownLabels:false},
 };
 const LABELS_URL="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 
-/* ---------- Mode (single: wind) ----------
-   Kept as a MODES table + const mode so this fork stays diffable against unified_map.html: the
-   entry carries the ramp/alpha/discard, arrow convention and base-map defaults that the shared
-   plumbing reads. */
+/* ---------- Modes ----------
+   A mode only changes: which tiles draw, the colour ramp/alpha/discard threshold pushed to the
+   shader, the arrow convention, and the base map. The Leaflet view is never touched, so flipping
+   layers keeps the exact same coordinates — the whole point of the app. */
 const MODES={
   // alpha defaults to 0.72 (the Fill opacity slider overrides it): the Esri reference layer carries
   // place names but NOT the shoreline, so the fill must stay sheer enough for the gray canvas's land
@@ -234,12 +297,16 @@ const MODES={
   wind:{    label:"Wind", edges:W_EDGES, cols:W_COL, alpha:0.72,
             // paint every valid cell incl. F0 calm (matches hrdps_map.html); only DRY discards
             minDraw:-1.0, unit:"km/h", base:"gray", labels:true, arrowFlip:180, arrowMin:1.0,
-            legendOver:GRAY_LAND },
+            legendOver:GRAY_LAND, mesh:false },
+  current:{ label:"Currents", edges:CUR_EDGES, cols:CUR_COL, alpha:0.85,
+            // <1 kt is left unshaded so the terrain base reads through (and DRY discards)
+            minDraw:1.0, unit:"kt", base:"usgs", labels:false, arrowFlip:0, arrowMin:0.2,
+            legendOver:BASE_WATER, mesh:true },
 };
-const mode="wind";
-const glMode=()=>MODES.wind;
-const getAlpha=()=>MODES.wind.alpha;
-const setActiveAlpha=v=>{ MODES.wind.alpha=clampAlpha(v); };
+let mode="wind";                            // this map LEADS with wind (the unified map leads with currents)
+const glMode=()=>MODES[mode];
+const getAlpha=()=>MODES[mode].alpha;
+const setActiveAlpha=v=>{ MODES[mode].alpha=clampAlpha(v); };
 
 const PTL=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false});
 
@@ -273,15 +340,19 @@ addEventListener("load",()=>{ if(!fitOK()) fitExtent(); });
    pane, however high its z-index) can never rise above a canvas that is mapPane's sibling in the
    container. Panes it is — then "labels" at 460 genuinely draws over the field at 450.
    The cost: mapPane is translated as you pan, so the canvases must be re-pinned to the viewport
-   every frame (syncOverlayPos), because they are drawn in container coordinates. */
-for(const [p,z] of [["fields",450],["labels",460]]){
+   every frame (syncOverlayPos), because they are drawn in container coordinates.
+   "mask" (455) carries the SSCOFS coverage hatch: over the field, under the place names, and
+   pointer-events:none so a tap north of the boundary still reaches the map and fires the readout. */
+for(const [p,z] of [["fields",450],["mask",455],["labels",460]]){
   map.createPane(p); const el=map.getPane(p); el.style.zIndex=z; el.style.pointerEvents="none";
 }
 let baseLayer=null, labelLayer=null;
 function setBase(key){
   if(baseLayer) map.removeLayer(baseLayer);
   const b=BASES[key]; baseLayer=L.tileLayer(b.url,{maxZoom:16,attribution:b.attr}).addTo(map);
-  const want=MODES[mode].labels;
+  // add the reference-labels overlay only when the mode wants labels AND the base has none of its own,
+  // otherwise topo/USGS bases (which bake in their own labels) would show a doubled set of city names.
+  const want=MODES[mode].labels && !b.ownLabels;
   if(want && !labelLayer) labelLayer=L.tileLayer(LABELS_URL,{maxZoom:16,pane:"labels"}).addTo(map);
   if(!want && labelLayer){ map.removeLayer(labelLayer); labelLayer=null; }
 }
@@ -309,7 +380,9 @@ const FS=`precision mediump float; varying float vSpeed; uniform vec3 uCols[13];
 void main(){ if(vSpeed<uMinDraw) discard; int bin=0; for(int i=0;i<12;i++){ if(vSpeed>=uEdges[i]) bin=i+1; }
   vec3 c=uCols[12]; for(int i=0;i<13;i++){ if(i==bin) c=uCols[i]; } gl_FragColor=vec4(c,uAlpha); }`;
 let gl=null, prog=null, loc={};
-let windTile=null;     // HRDPS whole-coast wind tile (the only field)
+const tiles={};        // mesh region key -> tile (currents, zoomed in)
+let overview=null;     // SSCOFS whole-coast current overview
+let windTile=null;     // HRDPS whole-coast wind tile
 function initGL(){
   // premultipliedAlpha MUST stay true (default): SRC_ALPHA blending onto a transparent clear
   // already stores premultiplied RGB. Declaring it false makes the browser multiply by alpha a
@@ -347,6 +420,18 @@ function applyModeGL(){
   gl.uniform1f(loc.uAlpha,getAlpha()); gl.uniform1f(loc.uMinDraw,m.minDraw);
 }
 function tileOrigin(bbox){ return CRS.latLngToPoint(L.latLng((bbox[1]+bbox[3])/2,(bbox[0]+bbox[2])/2),Z0); }
+function buildMeshBuffers(t,nodes,tris){
+  t.ref=tileOrigin(t.bbox);                                     // local origin (float32 precision)
+  const px=new Float64Array(nodes.length), py=new Float64Array(nodes.length);
+  for(let i=0;i<nodes.length;i++){ const p=CRS.latLngToPoint(L.latLng(nodes[i][1],nodes[i][0]),Z0); px[i]=p.x-t.ref.x; py[i]=p.y-t.ref.y; }
+  const pos=new Float32Array(t.ne*3*2); let k=0;
+  t.vtx=new Uint32Array(t.ne*3);                                // node id per vertex, for smoothing
+  for(let i=0;i<t.ne;i++){ const tr=tris[i]; for(let j=0;j<3;j++){ const n=tr[j];
+    t.vtx[i*3+j]=n; pos[k++]=px[n]; pos[k++]=py[n]; } }
+  t.posBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,t.posBuf); gl.bufferData(gl.ARRAY_BUFFER,pos,gl.STATIC_DRAW);
+  t.spdBuf=gl.createBuffer(); t.spd3=new Float32Array(t.ne*3);
+  t.nSum=new Float32Array(nodes.length); t.nCnt=new Float32Array(nodes.length); t.nVal=new Float32Array(nodes.length);
+}
 // Build the GL quad buffer for a regular lat/lon field tile (two triangles per cell, row 0 = north).
 // Cell size comes from bbox+cols+rows, NOT manifest res_deg: res_deg is the model's nominal spacing,
 // while the tile's actual step is (E-W)/(cols-1). They differ for the wind overview (0.02251 vs
@@ -366,8 +451,19 @@ function buildFieldQuads(t,cols,rows,lut){
   t.posBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,t.posBuf); gl.bufferData(gl.ARRAY_BUFFER,pos,gl.STATIC_DRAW);
   t.spdBuf=gl.createBuffer();
 }
-// The one whole-coast wind tile, at every zoom.
-function activeTiles(){ return windTile&&windTile.ready?[windTile]:[]; }
+// Which tiles draw right now. Wind: the one whole-coast tile at every zoom. Currents: native mesh
+// zoomed in, whole-coast overview zoomed out (and while a mesh tile is still downloading).
+// r[4] may be null (regions with no SSCOFS mesh) — filter before every bbox test.
+const isect=(b,x)=>b.getWest()<x[2]&&b.getEast()>x[0]&&b.getSouth()<x[3]&&b.getNorth()>x[1];
+function activeTiles(){
+  if(mode==="wind") return windTile&&windTile.ready?[windTile]:[];
+  if(map.getZoom()>=MESH_ZOOM){
+    const b=map.getBounds();
+    const ready=REGIONS.filter(r=>r[4]&&isect(b,r[4])).map(r=>tiles[r[3]]).filter(t=>t&&t.ready);
+    if(ready.length) return ready;
+  }
+  return overview&&overview.ready?[overview]:[];
+}
 function drawGL(){
   const size=map.getSize(), dpr=window.devicePixelRatio||1;
   glc.width=size.x*dpr; glc.height=size.y*dpr; glc.style.width=size.x+"px"; glc.style.height=size.y+"px";
@@ -415,8 +511,8 @@ function drawArrows(){
     // Thin ON THE GRID, not by screen bucket. The old first-come pixel-bucket test aliased against
     // the data lattice whenever the cell spacing was near tp — some buckets caught a point, their
     // neighbours caught none — which is what made the arrows clump into wavy bands at some zooms.
-    // A row/column stride keeps a strictly uniform lattice at every zoom. (Tiles with no regular
-    // grid would fall back to the bucket test; the wind tile always has one.)
+    // A row/column stride keeps a strictly uniform lattice at every zoom. (Unstructured mesh tiles
+    // have no grid: gridStride returns null and they keep the bucket test.)
     const st=gridStride(t,tp);
     const L2=st?Math.max(4,Math.min(12,st.eff*0.42)):Math.max(4,Math.min(12,tp*0.42));
     for(let i=0;i<t.ne;i++){
@@ -428,7 +524,7 @@ function drawArrows(){
       // Cross-tile overlap guard only (one tile can't collide with itself once strided).
       if(!st||acts.length>1){ const q=st?tp*0.55:tp;
         const key=((p.x/q)|0)*99999+((p.y/q)|0); if(seen.has(key)) continue; seen.add(key); }
-      // Wind stores FROM; arrowFlip(180) turns it into "where it's going" (downwind).
+      // Currents store TOWARD; wind stores FROM. arrowFlip turns both into "where it's going".
       const tw=(t.dir[i]+md.arrowFlip)*Math.PI/180, dx=Math.sin(tw), dy=-Math.cos(tw), x2=p.x+dx*L2, y2=p.y+dy*L2;
       ctx.beginPath(); ctx.moveTo(p.x-dx*L2,p.y-dy*L2); ctx.lineTo(x2,y2); ctx.stroke();
       const a1=tw+2.5,a2=tw-2.5,hs=L2*0.5;
@@ -438,6 +534,65 @@ function drawArrows(){
 }
 function render(){ syncOverlayPos(); drawGL(); drawArrows(); }
 map.on("move zoomend resize",render);
+
+/* ---------- coverage mask (Coast_Currents_Plan.md §2.2) — Currents layer only ----------
+   SSCOFS covers under half this map. A currents layer that simply renders blank over the northern
+   half reads as "no current" when what it means is "NOT MODELLED" — the same trap the roughness
+   "why not analyzed" popup fixed on the unified map. So the water the model never looked at is
+   hatched, and its boundary is drawn as a labelled line.
+   Geometry, both corrections from the measurements in §0/§2.1:
+     - the boundary sits at SSCOFS_LAT_MAX (52.09), not the bbox's 52.13 (~4 km of empty water);
+     - it is a CORNER, not a horizontal line: at 52.09 the westernmost data is -127.92 and the
+       domain tapers below that, so the line follows SSCOFS_EDGE_N down to the clip box's west wall
+       at 51.45 before running west to the edge of the map (west of the box the model never existed,
+       which is why Haida Gwaii, Hecate, Dixon and Cape St James are all inside the hatch).
+   The OFFSHORE gap — west of the shelf break, INSIDE the clip box, south of 51.45 — is deliberately
+   NOT masked and says nothing at all. David's call, recorded in plan §0: do not "fix" it. */
+let maskLayer=null;
+/* SVG hatch. Built with createElementNS (not innerHTML) so the nodes land in the SVG namespace on
+   every engine, and injected into the mask pane's own Leaflet renderer.
+   MUST be re-applied on every add, not just the first: Leaflet's SVG._initPath builds a BRAND NEW
+   <path> each time the layer is added and paints it from fillColor, so a flip to Wind and back
+   would drop the hatch back to a flat wash. The <defs> survives (the renderer does not), hence the
+   split between "inject once" and "repaint always". */
+function applyHatch(layer){
+  const svg=layer._renderer&&layer._renderer._container; if(!svg) return;
+  if(!svg.querySelector("#cwNoModel")){
+    const NS="http://www.w3.org/2000/svg", el=(n,a)=>{ const e=document.createElementNS(NS,n);
+      for(const k in a) e.setAttribute(k,a[k]); return e; };
+    const pat=el("pattern",{id:"cwNoModel",width:9,height:9,patternUnits:"userSpaceOnUse",patternTransform:"rotate(45)"});
+    pat.appendChild(el("rect",{width:9,height:9,fill:"#5b7186","fill-opacity":0.13}));
+    pat.appendChild(el("line",{x1:0,y1:0,x2:0,y2:9,stroke:"#41505f","stroke-width":2.2,"stroke-opacity":0.34}));
+    const defs=el("defs",{}); defs.appendChild(pat); svg.insertBefore(defs,svg.firstChild);
+  }
+  if(layer._path){ layer._path.setAttribute("fill","url(#cwNoModel)"); layer._path.setAttribute("fill-opacity",1); }
+}
+function buildMask(){
+  // Hatch polygon, [lat,lon]. Deliberately run well past FULL_EXTENT on the north/east/west so no
+  // unmasked sliver appears at the padded edge of maxBounds; only the boundary edge is exact.
+  const FN=60, FW=-145, FE=-110;
+  const taper=SSCOFS_EDGE_N.slice().reverse();          // north corner first, down to the box wall
+  const ring=[[FN,FW],[FN,FE],[SSCOFS_LAT_MAX,FE],...taper,[SSCOFS_EDGE_N[0][0],FW]];
+  const poly=L.polygon(ring,{pane:"mask",interactive:false,
+    stroke:false,fill:true,fillColor:"#5b7186",fillOpacity:0.2});
+  // The boundary itself: the model's TRUE northern edge, from the clip box's east wall along 52.09
+  // to the corner, then down the taper. (The polygon's western closing run at 51.45 is not a model
+  // boundary — the model never reached there at all — so it is not drawn as one.)
+  const line=L.polyline([[SSCOFS_LAT_MAX,SSCOFS_EXTENT[2]],...taper],{pane:"mask",interactive:false,
+    color:"#b45309",weight:3,opacity:0.95,dashArray:"8 6"});
+  line.bindTooltip("SSCOFS current model ends here — 52.1°N",
+    {permanent:true,direction:"top",className:"maskLbl",interactive:false});
+  const g=L.layerGroup([poly,line]);
+  g.__poly=poly;
+  return g;
+}
+function updateMask(){
+  if(!CURRENTS_ON) return;
+  const on=(mode==="current");
+  if(!maskLayer){ if(!on) return; maskLayer=buildMask(); }      // built lazily on first currents view
+  if(on){ if(!map.hasLayer(maskLayer)){ maskLayer.addTo(map); applyHatch(maskLayer.__poly); } }
+  else if(map.hasLayer(maskLayer)) map.removeLayer(maskLayer);
+}
 // Viewport-size changes Leaflet's own trackResize can miss: iOS Safari's URL-bar collapse/expand
 // (a visualViewport resize, on some versions without a window resize) and rotation. One debounced
 // path re-measures the container; invalidateSize fires the map's "resize" → render when the size
@@ -452,8 +607,9 @@ addEventListener("orientationchange",onViewportChange);
 if(window.visualViewport) visualViewport.addEventListener("resize",onViewportChange);
 
 /* ---------- hover / tap readout ----------
-   Point at the map to read the model at that spot: wind speed / Beaufort / direction. Coalesced to
-   one animation frame per move so brute-force nearest-cell stays cheap. Tap does the same on touch. */
+   Point at the map to read the model at that spot: wind (speed / Beaufort / direction) or current
+   (speed / set), per the active layer. Coalesced to one animation frame per move so brute-force
+   nearest-cell stays cheap. Tap does the same on touch. */
 const tip=$("tip");
 // #tip = [✕ button][.tipBody]. The readout HTML goes into .tipBody so the persistent ✕ survives each
 // re-render (innerHTML on #tip itself would wipe it). ✕ only shows in pinned mode (CSS).
@@ -488,12 +644,37 @@ function refreshTip(){ if(hoverLL && tip.style.display!=="none") doHover(); }
 function doHover(){
   hoverRAF=0; if(!hoverLL) return;
   const lat=hoverLL.lat, lon=hoverLL.lng; let html=null;
-  if(windTile&&windTile.ready){
+  if(mode==="wind" && windTile&&windTile.ready){
     decodeTile(windTile); const t=windTile, m=nearestCell(t,lat,lon,SNAP_DEG);
     if(m>=0 && !isNaN(t.spd[m])){
       html=`<b>Wind</b>`
         +row("Speed", `${Math.round(t.spd[m])} km/h · ${Math.round(t.spd[m]/1.852)} kt · F${beauF(t.spd[m])}`)
         +row("From", `${compass(t.dir[m])} (${Math.round(t.dir[m])}°)`);
+    }
+  } else if(mode==="current"){
+    /* §2.3 — north of the SSCOFS domain there is no current model at all, and blank water must not
+       be left to read as slack. The trigger is LATITUDE ALONE (> SSCOFS_LAT_MAX):
+         - not a bbox test — §0 shows the bbox is a clip box, not the domain;
+         - not an "is there a cell nearby" test — that would fire on every land tap in the Salish Sea.
+       The copy is about the MODEL'S REACH and what this MAP knows, never about what the water is
+       doing up there (plan §0 policy: no magnitude, no character, nothing). That is also what makes
+       it true on a LAND tap, which matters because there is no land/water test available north of
+       the domain — nearestCell against the SSCOFS overview is the only proximity gate and there is
+       no overview data up there, so the readout cannot tell sea from shore and must not try. */
+    if(lat>SSCOFS_LAT_MAX){
+      html=`<b>No current model here</b>`
+        +`<div class="hz" style="color:#f4a52a">Beyond the SSCOFS domain — it ends at 52.1°N</div>`
+        +`<div>The SSCOFS current model covers the Salish Sea and Queen Charlotte Sound; it does not extend north of 52.1°N. Wind on this map covers the whole coast, including Haida Gwaii.</div>`
+        +`<div style="margin-top:4px"><b>Blank here means <i>not modelled</i> — not slack.</b> This map has no current information north of the line. Use your own current references.</div>`;
+    } else {
+      let best=-1,bt=null,bd=SNAP_DEG*SNAP_DEG, cosm=Math.cos(lat*Math.PI/180);
+      for(const t of activeTiles()){ decodeTile(t);
+        for(let i=0;i<t.ne;i++){ const s=t.spd[i]; if(isNaN(s)) continue;
+          const dlo=(t.cx[i]-lon)*cosm, dla=t.cy[i]-lat, d=dlo*dlo+dla*dla;
+          if(d<bd){ bd=d; best=i; bt=t; } } }
+      if(best>=0) html=`<b>Current</b>`
+        +row("Speed", `${bt.spd[best].toFixed(1)} kt`)
+        +row("Set", `toward ${compass(bt.dir[best])} (${Math.round(bt.dir[best])}°)`);
     }
   }
   if(!html){ hideTip(); return; }
@@ -548,8 +729,8 @@ if(FORCE_OFFLINE){ // Block cross-origin fetch() only (R2 data): the same-origin
 }
 const isOnline=()=>!FORCE_OFFLINE && navigator.onLine!==false;
 let evictionNote=null;                     // set when the OS purged a saved copy, so offline errors explain why
-const dataSrc={wind:null};        // "live" | "cache" — provenance of the painted wind field
-const manSrc={wm:null};           // provenance of the manifest adopted at boot
+const dataSrc={wind:null,cur:null};    // "live" | "cache" — provenance of each painted overview field
+const manSrc={wm:null,mm:null,fm:null};// provenance of each manifest adopted at boot
 
 function netFetch(url, ms){   // fail-fast offline; abort on timeout so one-bar signal can't hang a refresh
   if(!isOnline()) return Promise.reject(new Error("offline"));
@@ -586,8 +767,8 @@ function adoptAxis(hoursMs){
   if(!t2.length){ setStatus("Saved packs share no forecast hours — connect and re-save together.",true); return false; }
   if(t2.length!==TIMES.length || t2[0]!==TIMES[0]){
     TIMES=t2; $("time").max=TIMES.length-1;
-    $("timeCap").textContent=`Forecast timeline (${TIMES.length-1} h)`;
-    if(windTile) windTile.decodedHour=-1;
+    recomputeTrim(); setTimeCap();          // must write the IDENTICAL caption boot() does (§1.7b)
+    for(const t of [overview,windTile,...Object.values(tiles)]) if(t) t.decodedHour=-1;
     setHour(Math.min(hour,TIMES.length-1));
   }
   return true;
@@ -631,16 +812,20 @@ async function refreshNow(){   // manifest first (~5 KB); re-download only when 
     b.disabled=false; b.textContent="↻ Refresh";
   }
 }
-/* Freshness banner (persistent, re-aged every 60 s): HRDPS runs 4×/day, so the clock keeps the
-   wind map's proven bands (green <12 h / amber 12–24 / red >24). The chip says "saved" when the
-   painted field came from the offline store rather than the network. */
+/* Two-clock freshness banner (persistent, re-aged every 60 s): HRDPS runs 4×/day, so the wind clock
+   keeps the wind map's proven bands (green <12 h / amber 12–24 / red >24). SSCOFS runs ~daily, so
+   24 h red would cry wolf — its bands are green <24 h / amber 24–40 / red >40 (past 40 h under 8 h
+   of the ~48 h horizon remains: treat as stale). The chip says "saved" when the painted field came
+   from the offline store rather than the network. Guards are the MIRROR of the unified map's: this
+   is a wind-led map, so wind is the layer that can never be dropped and currents is the optional one. */
 function updateStale(){
   const el=$("stale"); if(!el) return;
   const chip=(lbl,run,src,aH,rH)=>{ const ageH=(Date.now()-new Date(run).getTime())/3.6e6;
     const cls=ageH>rH?"red":ageH>aH?"amber":"ok";
     return `<span class="clk ${cls}">${lbl} run ${Math.round(ageH)} h ago${src==="cache"?" · saved":""}</span>`; };
   const parts=[];
-  if(RUN_WIND && dataSrc.wind) parts.push(chip("wind",RUN_WIND,dataSrc.wind,12,24));
+  if(mode!=="current" && RUN_WIND && dataSrc.wind) parts.push(chip("wind",RUN_WIND,dataSrc.wind,12,24));
+  if(mode!=="wind" && RUN_CUR && dataSrc.cur && !curDisabled) parts.push(chip("currents",RUN_CUR,dataSrc.cur,24,40));
   if(!isOnline()) parts.push('<span class="offnote">offline — basemap needs network</span>');
   el.innerHTML=parts.join(" ");
   el.style.display=parts.length?"inline-flex":"none";
@@ -655,15 +840,34 @@ function refreshOfflineUI(){
 }
 /* ============================================================================================= */
 
-let windMan=null, hour=0, TIMES=[], anim=null;
-let RUN_WIND=null;
+let windMan=null, meshMan=null, fieldMan=null, hour=0, TIMES=[], anim=null;
+let RUN_WIND=null, RUN_CUR=null, curDisabled=false;
+/* ---------- timeline caption (§1.7b) ----------
+   TIMES is the intersection of the wind axis with both SSCOFS axes, so up to 3 h can be trimmed —
+   but WHICH END moves with the cycles (HRDPS 00/06/12/18Z vs SSCOFS 03/09/15/21Z). A HEAD trim only
+   drops past hours and actually pulls hour 0 closer to now, so it costs nothing and is not worth a
+   caption. A TAIL trim really does shorten the forecast on a map whose job is wind to Dixon
+   Entrance, so it is disclosed. windHours is the axis the WIND data in hand actually carries (a
+   cached older-run pack has its own), which is what makes the trim attributable. */
+let windHours=[], axisTrim=0;
+function recomputeTrim(){
+  axisTrim=(!curDisabled && windHours.length && TIMES.length)
+    ? windHours.filter(h=>h>TIMES[TIMES.length-1]).length : 0;
+}
+function setTimeCap(){
+  $("timeCap").textContent=`Forecast timeline (${TIMES.length-1} h`+(axisTrim>0?` · −${axisTrim} h for currents`:"")+")";
+}
 async function gunzip(u8){ const ds=new DecompressionStream('gzip'); return new Uint8Array(await new Response(new Response(u8).body.pipeThrough(ds)).arrayBuffer()); }
 
 /* ---------- hour axis ----------
-   TIMES is the manifest's hour instants in epoch ms. With one dataset it only ever differs from
-   the tile's own axis when a SAVED pack (older run) replaces a live fetch — adoptAxis() then
-   shrinks TIMES to the pack's axis. The tile maps a master index into its own hour index by
-   exact ms lookup; no nearest-hour fuzz, no silent clamping. */
+   TIMES is the hour instants in epoch ms shared by every loaded dataset — ONE axis for both layers,
+   so flipping wind↔currents keeps the hour as well as the coordinates. HRDPS and SSCOFS run on
+   offset cycles (06Z vs 09Z today), so their axes differ at one end; see the §1.7a floor guard in
+   boot(). Each tile maps a master index into its OWN hour index by exact ms lookup; no nearest-hour
+   fuzz, no silent clamping.
+   NOTE the two feeds store hours differently — SSCOFS manifests carry epoch-ms NUMBERS, HRDPS
+   carries ISO STRINGS — so the wind axis must be mapped through isoToMs BEFORE any inter() call, or
+   the intersection comes back silently empty. */
 const inter=(a,b)=>{ const s=new Set(b); return a.filter(x=>s.has(x)); };
 function makeHourOf(hoursMs){
   const m=new Map(hoursMs.map((v,i)=>[v,i]));
@@ -675,19 +879,178 @@ const isoToMs=s=>new Date(s).getTime();
 
 function loadedSummary(){
   const age=r=>Math.round((Date.now()-new Date(r).getTime())/3.6e6);
+  if(mode==="current"){
+    const parts=Object.values(tiles).filter(t=>t.ready).map(t=>t.key);
+    return `SSCOFS currents · run ${PTL.format(new Date(RUN_CUR))} (${age(RUN_CUR)} h ago) · Salish Sea → Queen Charlotte Sound, model ends 52.1°N · overview${parts.length?" + "+parts.join(", "):""}`;
+  }
   return `HRDPS 2.5 km wind · run ${PTL.format(new Date(RUN_WIND))} (${age(RUN_WIND)} h ago) · Puget Sound → Dixon Entrance`;
 }
-// Decode the tile's current hour into spd/dir (arrows) + spd3 (GL). Lazy + cached per hour.
-// spdScale converts the speed byte to the unit: wind km/h = byte (spdScale 1).
+// Decode one tile's current hour into spd/dir (arrows) + spd3 (GL). Lazy + cached per hour.
+// spdScale converts the speed byte to the unit: currents kt = byte/10, wind km/h = byte.
+// Ownership: elements inside an earlier region's bbox are skipped (spd=NaN) so overlapping
+// translucent tiles never double-blend; the owning neighbour is always loaded for any view
+// that can see the overlap, because loading is viewport-driven with the same bboxes.
 function decodeTile(t){
   const hi=t.hourOf(hour);
   if(t.decodedHour===hi) return; t.decodedHour=hi;
-  const n=t.ne, span=t.span, vel=t.vel, vpe=t.vpe, sc=t.spdScale;
+  const n=t.ne, span=t.span, vel=t.vel, lut=t.lut, own=t.own, vpe=t.vpe, sc=t.spdScale;
   const sBase=hi*2*span, dBase=sBase+span;
-  for(let i=0;i<n;i++){ const s=vel[sBase+i];
-    t.spd[i]=(s===255)?NaN:s*sc; t.dir[i]=vel[dBase+i]*360/255; }
-  for(let i=0;i<n;i++){ const s=t.spd[i], v=(s!==s)?DRY:s, b=i*vpe; for(let k=0;k<vpe;k++) t.spd3[b+k]=v; }
+  for(let i=0;i<n;i++){ const j=lut?lut[i]:i; const s=vel[sBase+j];
+    const skip=(s===255)||(own&&!own[i]);
+    t.spd[i]=skip?NaN:s*sc; t.dir[i]=vel[dBase+j]*360/255; }
+  if(t.vtx){
+    // Smooth fill (native mesh): the model gives ONE speed per triangle, which reads as flat
+    // jagged facets in the narrows. Average element speeds onto the shared nodes and let the
+    // GPU interpolate; binning happens per-fragment AFTER interpolation, so the map still shows
+    // exactly the legend colours — bin edges just become iso-speed contours, not triangle edges.
+    // Dry/unowned triangles write DRY at all 3 corners so they stay discarded (never painted).
+    // Arrows keep the exact per-element values; only the paint is smoothed.
+    const nS=t.nSum, nC=t.nCnt, nV=t.nVal, vtx=t.vtx;
+    nS.fill(0); nC.fill(0);
+    for(let i=0;i<n;i++){ const s=t.spd[i]; if(s!==s) continue;
+      const b=i*3; nS[vtx[b]]+=s; nC[vtx[b]]++; nS[vtx[b+1]]+=s; nC[vtx[b+1]]++; nS[vtx[b+2]]+=s; nC[vtx[b+2]]++; }
+    for(let j2=0;j2<nV.length;j2++) nV[j2]=nC[j2]?nS[j2]/nC[j2]:0;
+    for(let i=0;i<n;i++){ const b=i*3;
+      if(t.spd[i]!==t.spd[i]){ t.spd3[b]=DRY; t.spd3[b+1]=DRY; t.spd3[b+2]=DRY; }
+      else { t.spd3[b]=nV[vtx[b]]; t.spd3[b+1]=nV[vtx[b+1]]; t.spd3[b+2]=nV[vtx[b+2]]; } }
+  } else {
+    for(let i=0;i<n;i++){ const s=t.spd[i], v=(s!==s)?DRY:s, b=i*vpe; for(let k=0;k<vpe;k++) t.spd3[b+k]=v; }
+  }
   if(gl){ gl.bindBuffer(gl.ARRAY_BUFFER,t.spdBuf); gl.bufferData(gl.ARRAY_BUFFER,t.spd3,gl.DYNAMIC_DRAW); }
+}
+async function ensureTile(key){
+  if(tiles[key]) return; const reg=REGIONS.find(r=>r[3]===key);
+  const t=tiles[key]={key,bbox:reg[4],vpe:3,ready:false,decodedHour:-1,spdScale:0.1};
+  const rm=meshMan.regions[key];
+  try{
+    // (1) a saved region pack already on the live run paints without downloading; (2) network (the
+    // mesh keeps the ?v=n_elem force-cache as tier 2 — a saved pack holds its OWN copy so HTTP-cache
+    // eviction can't strand it); (3) the saved pack at ANY run, indexed on its own meta.hours axis.
+    // NOTE region packs are only ever WRITTEN by phase 3 (offline packs), which is not in this
+    // build — so today path (1) and the write-through never fire and every zoomed-in tile comes off
+    // the network. The read paths are kept verbatim from unified_map.html so phase 3 adds only savers.
+    let mj=null, bytes=null, hoursMs=meshMan.hours, src="live";
+    const ix=lsIndex(), saved=(ix.regions||{})[key];
+    if(manSrc.mm==="live" && saved && saved.run===meshMan.run){
+      const meta=await ocGetJSON("region/"+key+".meta.json");
+      if(meta && meta.n_elem===rm.n_elem){
+        mj=await ocGetJSON("region/"+key+".mesh.json"); bytes=await ocGetBytes("region/"+key+".bin");
+        if(mj&&bytes) hoursMs=meta.hours; else { mj=null; bytes=null; }
+      }
+    }
+    if(!bytes && isOnline() && manSrc.mm==="live"){   // live-manifest guard: see loadOverviewOnce
+      try{
+        setStatus("Loading "+reg[0]+" mesh ("+rm.n_elem.toLocaleString()+" elements, ~"+(rm.n_elem*2*49/2.5e6).toFixed(1)+" MB)…");
+        const [mj2,vb]=await Promise.all([
+          // n_elem versions the URL: geometry changes (bbox edits) bust the force-cache automatically
+          fetch(R2+"/sscofs/"+rm.mesh+"?v="+rm.n_elem,{cache:"force-cache"}).then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }),
+          netFetch(R2+"/sscofs/meshvel/"+rm.file,180000).then(r=>r.arrayBuffer())
+        ]);
+        mj=mj2; bytes=new Uint8Array(vb); hoursMs=meshMan.hours; src="live";
+        if(saved){ const wire=bytes;                    // write-through keeps the saved pack current
+          ocPut("region/"+key+".bin",wire)
+            .then(()=>ocPut("region/"+key+".mesh.json",JSON.stringify(mj),"application/json"))
+            .then(()=>ocPut("region/"+key+".meta.json",JSON.stringify({run:meshMan.run,hours:meshMan.hours,n_elem:rm.n_elem,name:reg[0],savedAt:Date.now()}),"application/json"))
+            .then(()=>ocPut("man/meshvel.json",JSON.stringify(meshMan),"application/json"))
+            .then(()=>{ const x=lsIndex(); if(x.regions&&x.regions[key]){ x.regions[key].run=meshMan.run; lsIndexSet(x); refreshOfflineUI(); } })
+            .catch(()=>{});
+        }
+      }catch(_){ mj=null; bytes=null; }
+    }
+    if(!bytes){                                          // offline or fetch failed: saved pack, any run
+      const meta=await ocGetJSON("region/"+key+".meta.json");
+      mj=meta && await ocGetJSON("region/"+key+".mesh.json");
+      bytes=meta && await ocGetBytes("region/"+key+".bin");
+      if(!meta || !mj || !bytes){
+        if(saved) noteEviction(reg[0]+" currents",x=>{ if(x.regions) delete x.regions[key]; });
+        const e=new Error("no saved copy");
+        e.userMsg=evictionNote||("Offline — no saved "+reg[0]+" currents (overview resolution shown).");
+        throw e;
+      }
+      hoursMs=meta.hours; src="cache";
+      if(!adoptAxis(hoursMs)){ const e=new Error("no shared hours");
+        e.userMsg="Saved packs share no forecast hours — connect and re-save together."; throw e; }
+    }
+    const nodes=mj.nodes, tris=mj.tris, ne=tris.length;
+    t.ne=ne; t.span=ne; t.cx=new Float32Array(ne); t.cy=new Float32Array(ne);
+    t.hourOf=makeHourOf(hoursMs);                        // the pack's OWN axis (≠ live when cached)
+    for(let i=0;i<ne;i++){ const tr=tris[i];
+      t.cx[i]=(nodes[tr[0]][0]+nodes[tr[1]][0]+nodes[tr[2]][0])/3; t.cy[i]=(nodes[tr[0]][1]+nodes[tr[1]][1]+nodes[tr[2]][1])/3; }
+    if(bytes[0]===0x1f&&bytes[1]===0x8b) bytes=await gunzip(bytes);
+    if(bytes.length!==hoursMs.length*2*ne) throw new Error("meshvel is "+bytes.length+" B, expected "+(hoursMs.length*2*ne));
+    t.vel=bytes; t.spd=new Float32Array(ne); t.dir=new Float32Array(ne);
+    // Ownership mask = the bboxes of every EARLIER region; the three coverage-less regions carry
+    // bbox null, so they must be filtered out before the point-in-box test.
+    const earlier=REGIONS.slice(0,REGIONS.findIndex(r=>r[3]===key)).map(r=>r[4]).filter(Boolean);
+    if(earlier.length){ t.own=new Uint8Array(ne);
+      for(let i=0;i<ne;i++){ const lo=t.cx[i],la=t.cy[i];
+        t.own[i]=earlier.some(x=>lo>=x[0]&&lo<=x[2]&&la>=x[1]&&la<=x[3])?0:1; } }
+    buildMeshBuffers(t,nodes,tris);
+    t.ready=true; render(); setStatus(loadedSummary());
+  }catch(e){ delete tiles[key]; setStatus(e.userMsg||("Failed to load "+key+": "+e.message),true); }
+}
+let overviewLoading=null;
+const loadOverview=()=>overviewLoading||(overviewLoading=loadOverviewOnce());
+async function loadOverviewOnce(){
+  // Live-first with saved-pack fallback. Order: (1) a saved copy already on the live run paints
+  // without the download; (2) network; (3) the saved pack from ITS paired manifest (own hour axis
+  // via adoptAxis — never the live axis). Write-through keeps a saved copy current.
+  let bytes=null, fman=fieldMan, src="live";
+  const ix=lsIndex();
+  if(manSrc.fm==="live" && ix.base && ix.base.runCur===fieldMan.run)
+    bytes=await ocGetBytes("bin/field");                       // saved copy IS the latest run
+  // Network path ONLY when the manifest is live too: a live bin indexed on a cached (older-run)
+  // manifest's axis could misalign silently — the pack fallback below is always coherent.
+  if(!bytes && isOnline() && manSrc.fm==="live"){
+    try{
+      setStatus("Loading whole-coast current overview (~1.7 MB)…");
+      const wire=new Uint8Array(await (await netFetch(R2+"/sscofs/field/overview.bin",180000)).arrayBuffer());
+      bytes=wire;
+      // Opportunistic write-through: phase 3 (offline packs) is not in this build, so nothing ever
+      // SAVES the current overview deliberately — but a user who already has the wind pack gets a
+      // coherent (bin + its own manifest) copy for free the first time they open the layer online.
+      if(ix.base) ocPut("bin/field",wire)                      // wire body, pre-gunzip
+        .then(()=>ocPut("man/field.json",JSON.stringify(fieldMan),"application/json"))
+        .then(()=>{ const x=lsIndex(); if(x.base){ x.base.runCur=fieldMan.run; lsIndexSet(x); refreshOfflineUI(); } })
+        .catch(()=>{});
+    }catch(_){ bytes=null; }
+  }
+  if(!bytes){                                                  // offline or fetch failed: saved pack
+    const pm=await ocGetJSON("man/field.json"); bytes=await ocGetBytes("bin/field");
+    if(!pm || !bytes){
+      // Only an ix.base that RECORDS a saved current overview (runCur, set by the write-through
+      // above) can have lost one. The plain wind-only pack this build's saveOffline writes has no
+      // currents in it, so a miss here is the normal state — warning "the system removed it" would
+      // be a lie, and clearing ix.base would throw away the user's saved WIND pack with it.
+      if(ix.base && ix.base.runCur) noteEviction("current overview",x=>{ if(x.base) delete x.base.runCur; });
+      throw new Error(evictionNote||"offline — the saved pack holds wind only, so currents need a connection.");
+    }
+    fman=pm; src="cache"; RUN_CUR=fman.run;
+    if(!adoptAxis(fman.hours)) throw new Error("saved packs share no forecast hours");   // SSCOFS hours are already ms
+  }
+  const ov=fman.regions.overview, cols=ov.cols, rows=ov.rows;
+  const span=cols*rows, nh=fman.hours.length;
+  if(bytes[0]===0x1f&&bytes[1]===0x8b) bytes=await gunzip(bytes);
+  if(bytes.length!==nh*2*span) throw new Error(`current overview is ${bytes.length} B, expected ${nh*2*span}`);
+  const water=new Uint8Array(span);                     // water = valid in ANY hour (wet/dry cells)
+  for(let h=0;h<nh;h++){ const off=h*2*span; for(let i=0;i<span;i++) if(bytes[off+i]!==255) water[i]=1; }
+  const lut=[]; for(let i=0;i<span;i++) if(water[i]) lut.push(i);
+  const ne=lut.length;
+  const t={key:"overview",bbox:ov.bbox,vpe:6,ready:false,decodedHour:-1,ne,span,spdScale:0.1,
+           lut:Uint32Array.from(lut),vel:bytes,
+           cx:new Float32Array(ne),cy:new Float32Array(ne),
+           spd:new Float32Array(ne),dir:new Float32Array(ne),spd3:new Float32Array(ne*6)};
+  t.hourOf=makeHourOf(fman.hours);        // the PAIRED manifest's axis (≠ live when src==="cache")
+  buildFieldQuads(t,cols,rows,lut);
+  dataSrc.cur=src;
+  t.ready=true; overview=t; render(); setStatus(loadedSummary()); updateStale();
+}
+function updateTiles(){
+  if(!CURRENTS_ON || !meshMan || !MODES[mode].mesh) return;
+  if(map.getZoom()>=MESH_ZOOM){
+    const b=map.getBounds();
+    for(const r of REGIONS) if(r[4] && isect(b,r[4])) ensureTile(r[3]);
+  }
 }
 let windLoading=null;
 const loadWind=()=>windLoading||(windLoading=loadWindOnce());   // ~8 MB: never fetch it twice
@@ -717,7 +1080,10 @@ async function loadWindOnce(){
       throw new Error(evictionNote||"offline — no saved base pack. Connect once and tap “⬇ Save offline”.");
     }
     wman=pm; src="cache"; RUN_WIND=wman.run;
-    if(!adoptAxis(wman.hours.map(isoToMs))) throw new Error("saved packs share no forecast hours");
+    // The wind data in hand is now the pack's, so the trim caption must be measured against ITS
+    // axis (set before adoptAxis, which recomputes the caption).
+    windHours=wman.hours.map(isoToMs);
+    if(!adoptAxis(windHours)) throw new Error("saved packs share no forecast hours");
   }
   const ov=wman.regions["coast-overview"];
   if(!ov) throw new Error("no 'coast-overview' region in the HRDPS manifest — update + run hrdps-ingest first");
@@ -748,14 +1114,37 @@ function beaufortKey(alpha,withNames){
   return s;
 }
 function buildLegend(){
-  $("legend").innerHTML='<span class="lchip" style="font-weight:600">Wind (Beaufort):</span>'+beaufortKey(MODES.wind.alpha,true);
+  const md=MODES[mode]; let s;
+  if(mode==="current"){
+    s=`<span class="lchip" style="font-weight:600"><a href="${SSCOFS_URL}" target="_blank" rel="noopener" style="color:inherit">Current speed (kt)</a>:</span>`;
+    for(let f=0;f<CUR_COL.length;f++){
+      // Swatch = the colour as it actually appears on the water (blended at the fill alpha).
+      const sw = f===0 ? BASE_WATER : blend(CUR_COL[f],BASE_WATER,md.alpha);
+      const lbl = f===0 ? CUR_LBL[f]+" <span style='opacity:.6'>(unshaded)</span>" : CUR_LBL[f];
+      s+=`<span class="lchip"><i class="lsw" style="background:${sw}"></i>${lbl}</span>`; }
+    /* §2.5 — on the phone this Key panel IS the coverage message: the per-mode note under the map
+       is hidden there and the Region selector is gone. Every line describes what the MODEL covers
+       and what this MAP knows; none of them says anything about what the water is doing outside the
+       domain (plan §0 policy). The last chip is the from/toward trap, spelled out per §2.6. */
+    // Each of these chips holds ONE <span> child: .lchip is a flex container, so bare text plus
+    // inline <b>/<i> would become separate flex items and get pulled apart by the 6px gap.
+    s+=`<span class="lchip"><i class="lsw" style="background:repeating-linear-gradient(45deg,rgba(91,113,134,.13) 0 3px,rgba(65,80,95,.34) 3px 5px)"></i>`
+      +`<span>no current model — the model ends at 52.1°N (hatched: Haida Gwaii, Hecate, Dixon, Cape St James). `
+      +`<b>Blank there means <i>not modelled</i>, not slack.</b> Wind covers the whole coast.</span></span>`;
+    s+=`<span class="lchip" style="opacity:.75"><span>Outer west coast of Vancouver Island: a coastal band only, at the coarse overview resolution — nothing beyond the shelf edge. SSCOFS is a Salish Sea model; the outer water it does resolve is boundary-forced, not its validated core.</span></span>`;
+    s+=`<span class="lchip" style="opacity:.75"><span>Arrows show <b>set</b> — the way the water flows <i>toward</i>; wind arrows point <i>downwind</i>. A westerly wind and an east-setting current run together, not against each other; the arrows show the truth.</span></span>`;
+  } else {
+    s='<span class="lchip" style="font-weight:600">Wind (Beaufort):</span>'+beaufortKey(md.alpha,true);
+  }
+  $("legend").innerHTML=s;
 }
 const NOTES={
   wind:"HRDPS 2.5 km whole-coast field — Puget Sound → Dixon Entrance including all of Haida Gwaii — one resolution at every zoom (there is no finer wind tile). Arrows point <b>downwind</b> (the model stores the direction the wind blows <i>from</i>). Wind is drawn over land as well as water; place names and coastline are drawn on top. Beaufort bins match the unified marine map and the standalone wind map exactly.",
+  current:"SSCOFS covers the Salish Sea and Queen Charlotte Sound and <b>ends at 52.1°N</b>: there is no current model for Haida Gwaii, Hecate Strait, Dixon Entrance or Cape St James, and the hatched area shows exactly where it stops. <b>Blank there means <i>not modelled</i>, not slack</b> — this map has no current information north of the line. Wind on this map covers the whole coast, including Haida Gwaii. Zoomed out: whole-coast ~2 km overview; zoom in (≥ z10): native FVCOM mesh tiles (~40–90 m in narrows) load automatically for the water in view — the outer west coast of Vancouver Island has data in a coastal band only, at overview resolution, and none beyond the shelf edge. Arrows show <b>set</b> (the direction the water flows <i>toward</i>) — a westerly wind and an east-setting current run together, not against each other; the arrows show the truth. SSCOFS is a model — official CHS/NOAA predictions remain authoritative at the tightest narrows.",
 };
 function buildBaseSelect(){
   const md=MODES[mode], sel=$("base");
-  // wind leads with the plain coastline (md.base==="gray").
+  // wind leads with the plain coastline (md.base==="gray"); currents lead with USGS topo.
   const order = md.base==="gray" ? ["gray","topo","imagery"] : ["usgs","topo","imagery"];
   sel.innerHTML="";
   for(const k of order){ const o=document.createElement("option"); o.value=k; o.textContent=BASES[k].name;
@@ -766,7 +1155,7 @@ const basePref={};                        // remember the user's base choice per
    as uAlpha, and buildLegend() blends every swatch over the base at the same alpha. Moving the
    slider therefore keeps the key honest by construction — a swatch always shows the colour as it
    actually lands on the map. Only the swatch background is tinted; chip text stays fully opaque.
-   Default 0.72. */
+   The setting is per mode (wind 0.72, currents 0.85), so flipping layers restores each one's. */
 function syncOpacityUI(){
   const a=getAlpha();
   $("opacity").value=a; $("opacityVal").textContent=Math.round(a*100)+"%";
@@ -776,6 +1165,39 @@ function setAlpha(a){
   setActiveAlpha(a);
   syncOpacityUI(); applyModeGL(); buildLegend(); render(); updateURL();
 }
+// applyMode() re-skins everything from the current `mode`; setMode() is the guarded entry point.
+function applyMode(){
+  $("mode").value=mode;
+  applyModeGL(); syncOpacityUI(); buildLegend(); buildBaseSelect(); setBase($("base").value);
+  $("note").innerHTML=NOTES[mode];
+  updateMask();                             // the coverage hatch is Currents-only
+  // Every tile re-decodes: hour indices differ per dataset, and the cached hour is now stale.
+  for(const t of [overview,windTile,...Object.values(tiles)]) if(t) t.decodedHour=-1;
+  ensureLayer(); updateTiles(); render(); updateURL();
+  updateStale();                            // the banner shows a different clock per layer
+  hideTip();                                // the readout's shape + pointed cell differ across layers
+}
+// Each mode's whole-coast layer is fetched on first use and cached: a wind session never pays the
+// 1.7 MB currents overview, and a currents bookmark never pays the ~8 MB wind tile up front.
+function ensureLayer(){
+  if(!windMan) return;                                   // manifests not in yet; boot() will call us
+  const pending = mode==="current" ? (overview?null:loadOverview) : (windTile?null:loadWind);
+  if(pending) return pending().catch(e=>setStatus(MODES[mode].label+" layer failed: "+e.message,true));
+  setStatus(loadedSummary());
+}
+function setMode(next){
+  if(!MODES[next] || next===mode || (next==="current"&&(!CURRENTS_ON||curDisabled))) return;
+  mode=next; applyMode();
+}
+// Currents are the OPTIONAL layer on this map (the unified map inverts this): a missing, stale or
+// non-overlapping SSCOFS feed disables the option and leaves the wind map whole, rather than taking
+// the map down or silently shortening the wind timeline.
+function dropCurrents(){
+  if(curDisabled) return; curDisabled=true;
+  const o=$("mode").querySelector('option[value="current"]');
+  if(o){ o.disabled=true; o.hidden=true; }
+  if(mode==="current"){ mode="wind"; applyMode(); }
+}
 
 function setHour(x){
   hour=Math.max(0,Math.min(TIMES.length-1,x)); $("time").value=hour;
@@ -783,7 +1205,7 @@ function setHour(x){
   render(); updateURL(); refreshTip();      // scrubbed to a new hour → refresh a pinned readout in place
 }
 
-/* ---------- bookmarkable view: ?lat=&lon=&z=&h=&a= ---------- */
+/* ---------- bookmarkable view: ?mode=&lat=&lon=&z=&h=&a= ---------- */
 let urlTimer=null;
 function updateURL(){
   clearTimeout(urlTimer);
@@ -792,6 +1214,7 @@ function updateURL(){
     // `a` is the ACTIVE mode's fill opacity: each mode keeps its own, and a link only ever restores
     // the one it was shared in. The other modes fall back to their defaults.
     const p={lat:c.lat.toFixed(4),lon:c.lng.toFixed(4),z:map.getZoom(),h:hour,a:getAlpha().toFixed(2)};
+    if(CURRENTS_ON) p.mode=mode;
     history.replaceState(null,"","?"+new URLSearchParams(p));
   },250);
 }
@@ -802,14 +1225,27 @@ function applyURL(){
   if(v) map.setView([v.lat,v.lon],Math.max(v.z,map.getMinZoom()));
   return URL_VIEW.h;
 }
-map.on("moveend zoomend",updateURL);
+map.on("moveend zoomend",()=>{ updateTiles(); updateURL(); });   // mesh tiles load from the viewport
 
 // Region select = navigation shortcut; tile loading is automatic from the viewport.
 { const o=document.createElement("option"); o.value=-1; o.textContent="Full coast (overview)"; $("region").appendChild(o); }
 REGIONS.forEach((r,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=r[0]; $("region").appendChild(o); });
 $("region").onchange=e=>{ hideTip(); const i=+e.target.value;   // jumping regions no longer auto-hides via movestart
-  if(i<0) map.fitBounds(FULL_EXTENT);
-  else { const r=REGIONS[i]; map.setView(r[1], r[2]); } };
+  if(i<0){ map.fitBounds(FULL_EXTENT); return; }
+  const r=REGIONS[i];
+  // Only bump to MESH_ZOOM for regions that HAVE a mesh — for the three without one there is
+  // nothing finer to reveal, so forcing a zoom would just crop the view for no gain.
+  map.setView(r[1], (MODES[mode].mesh && r[3]) ? Math.max(r[2],MESH_ZOOM) : r[2]);
+  /* §2.4 — picking a region SSCOFS does not model must not silently show an empty map, and must
+     not auto-flip the layer under you either; the region stays selectable, the layer just has
+     nothing to say there. A null key alone is NOT the test: West Coast Vancouver I. has no mesh
+     either, but it IS inside the domain (coastal band at overview resolution), so this line would
+     be false for it. The two that really sit outside are Haida Gwaii (north of the limit) and
+     Cape St James (west of the clip box) — hence the two-sided check on the region's centre. */
+  if(mode==="current" && !r[3] && (r[1][0]>SSCOFS_LAT_MAX || r[1][1]<SSCOFS_EXTENT[0]))
+    setStatus(`${r[0]} — no SSCOFS current model north of 52.1°N. Wind is available here.`);
+};
+$("mode").onchange=e=>setMode(e.target.value);
 $("base").onchange=e=>{ basePref[mode]=e.target.value; setBase(e.target.value); };
 $("arrows").onchange=()=>{ rememberTp(); syncArrowsTgl(); render(); };
 $("opacity").oninput=e=>setAlpha(+e.target.value);
@@ -841,13 +1277,20 @@ $("stepFwd").onclick=()=>stepHour(1);
 $("saveBtn").onclick=saveOffline; $("refreshBtn").onclick=refreshNow;
 refreshOfflineUI();
 
-{ const a=parseFloat(new URLSearchParams(location.search).get("a"));
+// Adopt ?mode= BEFORE the first base map / GL uniforms / tile pass, so a wind bookmark never pays
+// for the currents stack on the way in. A stale mode is corrected in boot() once manifests land.
+if(!CURRENTS_ON){ const o=$("mode").querySelector('option[value="current"]'); o.disabled=true; o.hidden=true; }
+{ const q=new URLSearchParams(location.search), m=q.get("mode");
+  if(m && MODES[m] && !(m==="current"&&!CURRENTS_ON)) mode=m;
+  $("mode").value=mode;
+  const a=parseFloat(q.get("a"));                  // applies to the URL's mode (see updateURL)
   if(isFinite(a)) setActiveAlpha(a); }
 // Phone: the Base map + Arrows controls are hidden (media block) — pin their values instead:
 // Esri terrain, densest arrow spacing (David's picks, 2026-07-22).
 if(matchMedia("(max-width:640px)").matches){ basePref.wind="topo"; $("arrows").value="12"; }
 rememberTp(); syncArrowsTgl();
 syncOpacityUI(); buildLegend(); buildBaseSelect(); setBase($("base").value); $("note").innerHTML=NOTES[mode];
+updateMask();                               // a ?mode=current cold load must show the hatch immediately
 
 /* ---------- phone layout DOM (pairs with the @media (max-width:640px) block) ----------
    The CSS owns all sizing; only the two moves CSS can't express are done here: the header
@@ -879,23 +1322,56 @@ if(initGL()) boot();
 
 async function boot(){
   try{
-    // Manifest first (small); the wind BINARY follows in loadWind. Live with a saved fallback:
-    // an airplane-mode relaunch boots from the saved pack instead of blank-screening; netFetch's
-    // timeout keeps one-bar signal from hanging the boot. manSrc records the source.
-    let wm;
-    try{ wm=await (await netFetch(R2+"/hrdps/manifest.json",12000)).json(); manSrc.wm="live"; }
-    catch(e){ wm=await ocGetJSON("man/hrdps.json"); if(wm) manSrc.wm="cache"; else throw e; }
+    // Manifests first (all small); the binaries are lazy per layer. Live with a per-manifest saved
+    // fallback: an airplane-mode relaunch boots from the saved pack instead of blank-screening;
+    // netFetch's timeout keeps one-bar signal from hanging the boot. manSrc records each source.
+    // FAILURE DIRECTION IS THE MIRROR OF THE UNIFIED MAP'S: wind is essential here and throws to the
+    // handler below, while either SSCOFS manifest missing merely drops the currents option.
+    const manLoad=async(path,ckey,tag)=>{
+      try{ const j=await (await netFetch(R2+path,12000)).json(); manSrc[tag]="live"; return j; }
+      catch(e){ const j=await ocGetJSON(ckey); if(j){ manSrc[tag]="cache"; return j; } throw e; }
+    };
+    const [wm,mm,fm]=await Promise.all([
+      manLoad("/hrdps/manifest.json","man/hrdps.json","wm"),
+      CURRENTS_ON ? manLoad("/sscofs/meshvel/manifest.json","man/meshvel.json","mm").catch(()=>null) : null,
+      CURRENTS_ON ? manLoad("/sscofs/field/manifest.json","man/field.json","fm").catch(()=>null) : null,
+    ]);
     windMan=wm; RUN_WIND=wm.run;
     if(!wm.regions["coast-overview"])
       throw new Error('no "coast-overview" region in the HRDPS manifest — update + run hrdps-ingest first');
-    TIMES=wm.hours.map(isoToMs);
+    meshMan=mm; fieldMan=fm; RUN_CUR=fm&&fm.run;
+    /* §1.7 timeline — ONE intersected axis, because time is part of the view: a per-layer axis would
+       silently move you from hour 47 to 45 on a layer flip and not restore it on the way back.
+       §1.7a floor guard: a merely STALE SSCOFS run would otherwise pass through the intersection
+       unchecked and quietly shorten the wind timeline on a map whose whole job is wind to Dixon
+       Entrance. Counting TAIL loss only — a head trim drops past hours, costs nothing, and moves
+       hour 0 closer to now. >6 h means SSCOFS has missed a whole cycle: keep the full wind axis and
+       drop currents instead. mm/fm hours are already epoch ms; wh is mapped through isoToMs first,
+       or the intersection comes back empty and this reads as a missed cycle. */
+    const wh=wm.hours.map(isoToMs);
+    windHours=wh; TIMES=wh;
+    let dropWhy="";
+    if(CURRENTS_ON && mm && fm){
+      const both=inter(inter(mm.hours,fm.hours), wh);
+      const lostTail=both.length ? wh.filter(h=>h>both[both.length-1]).length : 99;
+      if(both.length>=12 && lostTail<=6) TIMES=both;
+      else { dropWhy="no overlapping SSCOFS hours"; dropCurrents(); }   // wind keeps its full axis
+    } else if(CURRENTS_ON){
+      // The airplane-mode relaunch lands here: this build saves wind only (offline packs are
+      // phase 3), so there is no cached SSCOFS manifest to fall back to. Say that, rather than
+      // blaming an hour mismatch that was never tested.
+      dropWhy=isOnline()?"SSCOFS feed unavailable":"no saved currents data — connect for currents";
+      dropCurrents();
+    }
+    if(!TIMES.length) throw new Error("the HRDPS manifest carries no forecast hours");
     $("time").max=TIMES.length-1;
-    $("timeCap").textContent=`Forecast timeline (${TIMES.length-1} h)`;
+    recomputeTrim(); setTimeCap();                         // §1.7b: disclose a tail trim, stay silent on a head trim
     const h=applyURL();
     setHour(isFinite(h)?h:0);
     refreshOfflineUI();
-    await loadWind();
-    updateStale();
+    await ensureLayer();
+    updateTiles(); updateStale();
+    if(curDisabled && dropWhy) setStatus(loadedSummary()+" · currents unavailable ("+dropWhy+")");
   }catch(e){
     setStatus(isOnline() ? "Failed: "+e.message
       : (evictionNote||"Offline — nothing saved yet. Connect once and tap “⬇ Save offline”."), true);
