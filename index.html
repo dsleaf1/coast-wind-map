@@ -180,7 +180,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23c (phone <b>Key</b> panel: Beaufort chips laid out 3 per row (4 tidy rows at every phone width instead of 5–6 ragged ones), and the Currents key is now just the speed swatches — the three coverage notes are desktop-only there, a tap north of 52.1°N still explains the blank water; 2026-07-23b: Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
+  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23d (Currents: zoomed in past z10, the whole-coast overview now draws <i>alongside</i> the native mesh instead of being switched off by it — a mesh region whose bbox merely clips the corner of your view no longer blanks the modelled water everywhere else on screen (WCVI, Clayoquot to Barkley, was losing a full screen of currents to an 800 m pan), and the tap readout comes back with it; picking Cape St James in Currents no longer blames the blank water on 52.1°N — it is west of the model, not north of it; 2026-07-23c: phone <b>Key</b> panel: Beaufort chips laid out 3 per row (4 tidy rows at every phone width instead of 5–6 ragged ones), and the Currents key is now just the speed swatches — the three coverage notes are desktop-only there, a tap north of 52.1°N still explains the blank water; 2026-07-23b: Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
 </header>
 <main>
   <div class="bar">
@@ -405,6 +405,7 @@ void main(){ if(vSpeed<uMinDraw) discard; int bin=0; for(int i=0;i<12;i++){ if(v
 let gl=null, prog=null, loc={};
 const tiles={};        // mesh region key -> tile (currents, zoomed in)
 let overview=null;     // SSCOFS whole-coast current overview
+let ovClip=null, ovClipSig="";   // the same overview, DRY-masked under the loaded mesh (syncClipOverview)
 let windTile=null;     // HRDPS whole-coast wind tile
 function initGL(){
   // premultipliedAlpha MUST stay true (default): SRC_ALPHA blending onto a transparent clear
@@ -478,12 +479,48 @@ function buildFieldQuads(t,cols,rows,lut){
 // zoomed in, whole-coast overview zoomed out (and while a mesh tile is still downloading).
 // r[4] may be null (regions with no SSCOFS mesh) — filter before every bbox test.
 const isect=(b,x)=>b.getWest()<x[2]&&b.getEast()>x[0]&&b.getSouth()<x[3]&&b.getNorth()>x[1];
+/* Clip and include. A mesh region's bbox can clip the viewport while its water is entirely
+   off-screen — juan-de-fuca reaches up to lon -125.3, northern-georgia-strait down to -125.4 and
+   49.0N, so a viewport off Clayoquot "intersects" northern-georgia-strait in a corner of dry
+   Vancouver Island. This used to hand the whole screen to that mesh tile and drop the overview
+   outright, blanking real modelled water (measured: an 800 m pan at Clayoquot took the map from
+   arrows everywhere to zero painted pixels, and the tap readout went silent with it).
+   So draw BOTH: a second overview tile whose cells are DRY wherever a *loaded* mesh region owns
+   them. Two properties make it exact. (1) Masking on the ready set, not on all six bboxes, means a
+   region still downloading keeps its overview cover until its mesh lands — no hole, no double
+   paint. (2) A masked cell can only be on screen if its owner's bbox clips the viewport, and then
+   that tile is in `ready` and drawn — so the mask can never open a gap. Rebuilt only when the
+   ready set changes (at most once per region per session): geometry, lut and velocity bytes are
+   shared with the overview, so this is one pass over the water cells and a re-decode.
+   Note the r[4] null guard: three coast regions have no SSCOFS mesh at all. */
+function syncClipOverview(){
+  if(!overview||!overview.ready){ ovClip=null; ovClipSig=""; return null; }
+  const boxes=REGIONS.filter(r=>r[4]&&tiles[r[3]]&&tiles[r[3]].ready).map(r=>r[4]);
+  const sig=boxes.map(x=>x.join(",")).join(";");
+  if(ovClip&&ovClip.src===overview&&ovClipSig===sig) return ovClip;
+  ovClipSig=sig;
+  if(!boxes.length){ ovClip=null; return null; }
+  const o=overview, ne=o.ne;
+  // Share the static geometry (posBuf/ref/grid) and the velocity bytes; only the mask, the decoded
+  // arrays and the GL speed buffer are this tile's own.
+  const t=(ovClip&&ovClip.ne===ne&&ovClip.src===o)?ovClip:{
+    key:"overview",src:o,bbox:o.bbox,vpe:6,ready:true,ne,span:o.span,spdScale:o.spdScale,
+    lut:o.lut,cx:o.cx,cy:o.cy,ref:o.ref,posBuf:o.posBuf,gcols:o.gcols,grows:o.grows,glut:o.glut,
+    spd:new Float32Array(ne),dir:new Float32Array(ne),spd3:new Float32Array(ne*6),
+    own:new Uint8Array(ne),spdBuf:gl.createBuffer()};
+  t.vel=o.vel; t.hourOf=o.hourOf; t.man=o.man;   // follow the overview across a run change
+  for(let i=0;i<ne;i++){ const lo=o.cx[i], la=o.cy[i];
+    t.own[i]=boxes.some(x=>lo>=x[0]&&lo<=x[2]&&la>=x[1]&&la<=x[3])?0:1; }
+  t.decodedHour=-1;                              // force a re-decode through the new mask
+  ovClip=t; return t;
+}
 function activeTiles(){
   if(mode==="wind") return windTile&&windTile.ready?[windTile]:[];
   if(map.getZoom()>=MESH_ZOOM){
     const b=map.getBounds();
     const ready=REGIONS.filter(r=>r[4]&&isect(b,r[4])).map(r=>tiles[r[3]]).filter(t=>t&&t.ready);
-    if(ready.length) return ready;
+    // Additive, not all-or-nothing: the clipped overview covers every pixel the mesh doesn't own.
+    if(ready.length){ const oc=syncClipOverview(); return oc?[oc,...ready]:ready; }
   }
   return overview&&overview.ready?[overview]:[];
 }
@@ -1277,8 +1314,11 @@ $("region").onchange=e=>{ hideTip(); const i=+e.target.value;   // jumping regio
      either, but it IS inside the domain (coastal band at overview resolution), so this line would
      be false for it. The two that really sit outside are Haida Gwaii (north of the limit) and
      Cape St James (west of the clip box) — hence the two-sided check on the region's centre. */
+  /* One string serves both, so it must not name a cause: Haida Gwaii is outside because it is
+     north of 52.1°N, Cape St James because it is west of the model's edge — saying "north of
+     52.1°N" at a region centred 51.94°N was a false reason for the blank water. */
   if(mode==="current" && !r[3] && (r[1][0]>SSCOFS_LAT_MAX || r[1][1]<SSCOFS_EXTENT[0]))
-    setStatus(`${r[0]} — no SSCOFS current model north of 52.1°N. Wind is available here.`);
+    setStatus(`${r[0]} — outside the SSCOFS current model (it ends at 52.1°N and does not reach this far west). Wind is available here.`);
 };
 $("mode").onchange=e=>setMode(e.target.value);
 $("base").onchange=e=>{ basePref[mode]=e.target.value; setBase(e.target.value); };
