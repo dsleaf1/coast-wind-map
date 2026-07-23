@@ -157,7 +157,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23a (new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
+  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23b (Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
 </header>
 <main>
   <div class="bar">
@@ -1102,15 +1102,14 @@ async function loadWindOnce(){
 
 function setStatus(m,err){ const e=$("status"); e.textContent=m; e.className="status"+(err?" err":""); }
 
-// Beaufort colour chips at a given fill alpha. withNames = full (wind mode); compact = key only (rings).
-function beaufortKey(alpha,withNames){
+// Beaufort colour chips at a given fill alpha — force number + wind range only, no descriptor, to keep the Key compact.
+function beaufortKey(alpha){
   let s="";
   for(let f=0;f<=9;f++){
     const ktl = f===0 ? "calm" : `${kt(W_EDGES[f-1])}${f<W_EDGES.length?"–"+kt(W_EDGES[f]-1):"+"} kt`;
-    const name = withNames ? " "+W_NAMES[f] : "";
-    s+=`<span class="lchip"><i class="lsw" style="background:${blend(W_COL[f],GRAY_LAND,alpha)}"></i>F${f}${name} · ${ktl}</span>`;
+    s+=`<span class="lchip"><i class="lsw" style="background:${blend(W_COL[f],GRAY_LAND,alpha)}"></i>F${f} · ${ktl}</span>`;
   }
-  s+=`<span class="lchip"><i class="lsw" style="background:${blend(W_COL[10],GRAY_LAND,alpha)}"></i>F10+${withNames?" Storm":""}</span>`;
+  s+=`<span class="lchip"><i class="lsw" style="background:${blend(W_COL[10],GRAY_LAND,alpha)}"></i>F10+</span>`;
   return s;
 }
 function buildLegend(){
@@ -1134,7 +1133,7 @@ function buildLegend(){
     s+=`<span class="lchip" style="opacity:.75"><span>Outer west coast of Vancouver Island: a coastal band only, at the coarse overview resolution — nothing beyond the shelf edge. SSCOFS is a Salish Sea model; the outer water it does resolve is boundary-forced, not its validated core.</span></span>`;
     s+=`<span class="lchip" style="opacity:.75"><span>Arrows show <b>set</b> — the way the water flows <i>toward</i>; wind arrows point <i>downwind</i>. A westerly wind and an east-setting current run together, not against each other; the arrows show the truth.</span></span>`;
   } else {
-    s='<span class="lchip" style="font-weight:600">Wind (Beaufort):</span>'+beaufortKey(md.alpha,true);
+    s='<span class="lchip" style="font-weight:600">Wind (Beaufort):</span>'+beaufortKey(md.alpha);
   }
   $("legend").innerHTML=s;
 }
