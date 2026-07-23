@@ -46,6 +46,12 @@
   /* flex:0 0 auto — .lchip is a flex row, and without it a long note (the currents coverage chips)
      shrinks the swatch to a sliver on a narrow phone. */
   .lsw{flex:0 0 auto;width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.15)}
+  /* The Beaufort header + its 11 force chips ship inside one wrapper so the phone can grid them
+     3-per-row without touching the other chips (the currents coverage notes must keep wrapping
+     full-width). display:contents = the wrapper vanishes from layout and the chips stay direct flex
+     items of .legend, i.e. desktop behaves exactly as it did before the wrapper existed. */
+  .bfgrid{display:contents}
+  .hdrShort{display:none}                  /* phone-only short header; see the @media block */
   .status{font-size:13px;color:var(--muted);margin-top:10px} .status.err{color:#b54708}
   /* Label on the SSCOFS coverage boundary (Currents layer only). A Leaflet permanent tooltip, so it
      lives in the tooltipPane (z 650) above the hatch; styled as a plain amber pill because the
@@ -146,6 +152,23 @@
          padding:8px 56px 8px 8px;max-height:50vh;max-height:50dvh;overflow:auto;
          box-shadow:0 2px 10px rgba(0,0,0,.2)}
     #map .legend.open{display:flex}
+    /* Beaufort chips 3-per-row instead of flex-wrap's 2 (measured: 6 rows at 320 px, 5 at 360 px,
+       3-per-row only from 375 px up). Header cell + 11 chips = 12 cells = 4 rows at EVERY width.
+       Scoped to .bfgrid so the currents coverage chips keep wrapping full-width.
+       The tightening below is load-bearing, not cosmetic: a phone column is only ~89 px at 360 px
+       wide (the panel spends 56 px of its width clearing the ✕ button), and at the desktop 11 px /
+       6 px gap / 14 px swatch "F5 · 16–21 kt" wraps to two lines — which costs back the row the
+       grid just saved. clamp() keeps the text at 11 px on a wide phone and eases it to 10 px on a
+       narrow one rather than wrapping. */
+    .bfgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;flex:1 1 100%;min-width:0}
+    .bfgrid .lchip{gap:4px;padding:3px 4px;min-width:0;font-size:clamp(10px,2.7vw,11px)}
+    .bfgrid .lsw{width:11px;height:11px}
+    .hdrLong{display:none} .hdrShort{display:inline}
+    /* Currents Key on the phone = the speed swatches only. The three long coverage notes are
+       hidden here (David, 2026-07-23c): they cost most of the panel's height, and the one that
+       matters is still delivered on demand — a tap north of 52.1°N fires the §2.3 popup with the
+       full "no current model / blank means not modelled, not slack" text. Desktop keeps all three. */
+    .curnote{display:none}
     /* Key button stays on the map while closed (parking it at the page bottom would sit on top of
        Refresh); once open it goes fixed too, into the panel's bottom-right corner as the ✕ */
     #legendBtn{position:absolute;right:8px;bottom:8px;z-index:1101;min-width:44px;min-height:44px;
@@ -157,7 +180,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23b (Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
+  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23c (phone <b>Key</b> panel: Beaufort chips laid out 3 per row (4 tidy rows at every phone width instead of 5–6 ragged ones), and the Currents key is now just the speed swatches — the three coverage notes are desktop-only there, a tap north of 52.1°N still explains the blank water; 2026-07-23b: Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
 </header>
 <main>
   <div class="bar">
@@ -1121,19 +1144,32 @@ function buildLegend(){
       const sw = f===0 ? BASE_WATER : blend(CUR_COL[f],BASE_WATER,md.alpha);
       const lbl = f===0 ? CUR_LBL[f]+" <span style='opacity:.6'>(unshaded)</span>" : CUR_LBL[f];
       s+=`<span class="lchip"><i class="lsw" style="background:${sw}"></i>${lbl}</span>`; }
-    /* §2.5 — on the phone this Key panel IS the coverage message: the per-mode note under the map
-       is hidden there and the Region selector is gone. Every line describes what the MODEL covers
-       and what this MAP knows; none of them says anything about what the water is doing outside the
-       domain (plan §0 policy). The last chip is the from/toward trap, spelled out per §2.6. */
+    /* §2.5 — these three coverage notes describe what the MODEL covers and what this MAP knows;
+       none of them says anything about what the water is doing outside the domain (plan §0 policy).
+       The last chip is the from/toward trap, spelled out per §2.6.
+       .curnote hides all three ON THE PHONE ONLY (2026-07-23c) — they dominated the Key panel's
+       height. §2.5's original phone reasoning (the per-mode note under the map is hidden there, so
+       this panel carried the coverage message) is superseded by David's call: the §2.3 popup already
+       delivers the coverage message on a tap north of 52.1°N, which is where it matters. */
     // Each of these chips holds ONE <span> child: .lchip is a flex container, so bare text plus
     // inline <b>/<i> would become separate flex items and get pulled apart by the 6px gap.
-    s+=`<span class="lchip"><i class="lsw" style="background:repeating-linear-gradient(45deg,rgba(91,113,134,.13) 0 3px,rgba(65,80,95,.34) 3px 5px)"></i>`
+    s+=`<span class="lchip curnote"><i class="lsw" style="background:repeating-linear-gradient(45deg,rgba(91,113,134,.13) 0 3px,rgba(65,80,95,.34) 3px 5px)"></i>`
       +`<span>no current model — the model ends at 52.1°N (hatched: Haida Gwaii, Hecate, Dixon, Cape St James). `
       +`<b>Blank there means <i>not modelled</i>, not slack.</b> Wind covers the whole coast.</span></span>`;
-    s+=`<span class="lchip" style="opacity:.75"><span>Outer west coast of Vancouver Island: a coastal band only, at the coarse overview resolution — nothing beyond the shelf edge. SSCOFS is a Salish Sea model; the outer water it does resolve is boundary-forced, not its validated core.</span></span>`;
-    s+=`<span class="lchip" style="opacity:.75"><span>Arrows show <b>set</b> — the way the water flows <i>toward</i>; wind arrows point <i>downwind</i>. A westerly wind and an east-setting current run together, not against each other; the arrows show the truth.</span></span>`;
+    s+=`<span class="lchip curnote" style="opacity:.75"><span>Outer west coast of Vancouver Island: a coastal band only, at the coarse overview resolution — nothing beyond the shelf edge. SSCOFS is a Salish Sea model; the outer water it does resolve is boundary-forced, not its validated core.</span></span>`;
+    s+=`<span class="lchip curnote" style="opacity:.75"><span>Arrows show <b>set</b> — the way the water flows <i>toward</i>; wind arrows point <i>downwind</i>. A westerly wind and an east-setting current run together, not against each other; the arrows show the truth.</span></span>`;
   } else {
-    s='<span class="lchip" style="font-weight:600">Wind (Beaufort):</span>'+beaufortKey(md.alpha);
+    /* Header + the 11 force chips ship inside ONE .bfgrid wrapper (display:contents on desktop, a
+       3-column grid on the phone). The header is a grid CELL, not a full-width row: 1 header + 11
+       chips = 12 cells = exactly 4 rows of 3. Given it its own row instead, the grid would be 5
+       rows — taller than the flex-wrap it replaces. Hence the shorter label on the phone: measured,
+       "Wind (Beaufort):" needs 101 px (94 px even at 10 px type) against a cell that is 88.7 px at
+       360 px wide and 93.7 px at 375 — it cannot fit at any phone width, and wrapping it to two
+       lines costs back the row the grid just saved. "Beaufort:" needs 61 px, so it fits down to
+       320 px; no abbreviation, and "Wind" is already on the Layer selector directly above. */
+    s='<span class="bfgrid"><span class="lchip" style="font-weight:600">'
+      +'<span class="hdrLong">Wind (Beaufort):</span><span class="hdrShort">Beaufort:</span></span>'
+      +beaufortKey(md.alpha)+'</span>';
   }
   $("legend").innerHTML=s;
 }

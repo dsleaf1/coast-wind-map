@@ -17,7 +17,7 @@
  * the one file serves both trees: index.html (deployed) and coast_wind_map.html
  * (the cape working copy under the local dev server).
  */
-const CACHE_VERSION = "coastwind-shell-v9";   // 2026-07-23b: Wind Key legend condensed (Beaufort force + range only)
+const CACHE_VERSION = "coastwind-shell-v10";  // 2026-07-23c: phone Key panel — Beaufort chips 3 per row, currents coverage notes desktop-only
 
 const SHELL = [
   "./",
