@@ -17,7 +17,7 @@
  * the one file serves both trees: index.html (deployed) and coast_wind_map.html
  * (the cape working copy under the local dev server).
  */
-const CACHE_VERSION = "coastwind-shell-v11";  // 2026-07-23d: clip-and-include — overview draws alongside the mesh at z>=10; Cape St James status line
+const CACHE_VERSION = "coastwind-shell-v12";  // 2026-07-23e: offline currents — base pack adds SSCOFS field overview + per-region mesh packs
 
 const SHELL = [
   "./",

@@ -180,7 +180,7 @@
 <body>
 <header>
   <h1>Coast Wind Map — HRDPS 2.5 km</h1>
-  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23d (Currents: zoomed in past z10, the whole-coast overview now draws <i>alongside</i> the native mesh instead of being switched off by it — a mesh region whose bbox merely clips the corner of your view no longer blanks the modelled water everywhere else on screen (WCVI, Clayoquot to Barkley, was losing a full screen of currents to an 800 m pan), and the tap readout comes back with it; picking Cape St James in Currents no longer blames the blank water on 52.1°N — it is west of the model, not north of it; 2026-07-23c: phone <b>Key</b> panel: Beaufort chips laid out 3 per row (4 tidy rows at every phone width instead of 5–6 ragged ones), and the Currents key is now just the speed swatches — the three coverage notes are desktop-only there, a tap north of 52.1°N still explains the blank water; 2026-07-23b: Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
+  <p>One map, Puget Sound → Dixon Entrance, including all of Haida Gwaii. HRDPS 2.5 km wind over the whole coast, 4 runs/day, ~48 h timeline; SSCOFS currents wherever that model reaches — the Salish Sea and Queen Charlotte Sound, ending at 52.1°N. For wind-against-current roughness in the Salish Sea use the Unified Marine Map. <span style="opacity:.7">build 2026-07-23e (Offline: the ⬇ Save button now stores currents too — the base pack adds the whole-coast SSCOFS current overview (~1.6 MB) so the outer coast has working offline currents at overview resolution, and navigating into a Salish Sea region and saving again adds that region's native mesh for full-resolution offline currents there; the button names exactly what each spot gets (Haida Gwaii and Cape St James stay wind-only, there is no current model up there); a currents outage never blocks a wind save or refresh; 2026-07-23d: Currents: zoomed in past z10, the whole-coast overview now draws <i>alongside</i> the native mesh instead of being switched off by it — a mesh region whose bbox merely clips the corner of your view no longer blanks the modelled water everywhere else on screen (WCVI, Clayoquot to Barkley, was losing a full screen of currents to an 800 m pan), and the tap readout comes back with it; picking Cape St James in Currents no longer blames the blank water on 52.1°N — it is west of the model, not north of it; 2026-07-23c: phone <b>Key</b> panel: Beaufort chips laid out 3 per row (4 tidy rows at every phone width instead of 5–6 ragged ones), and the Currents key is now just the speed swatches — the three coverage notes are desktop-only there, a tap north of 52.1°N still explains the blank water; 2026-07-23b: Wind <b>Key</b> legend condensed — Beaufort force number + wind range only, descriptor dropped to shrink the Key panel; 2026-07-23a: new <b>Layer</b> selector — SSCOFS currents alongside the wind: native FVCOM mesh from z10, whole-coast overview zoomed out, arrows show set; the water north of 52.1°N is hatched because the current model does not reach it — blank there means <i>not modelled</i>, not slack — and a tap up there says so; timeline is the hours both models share; fixed doubled city labels on base maps that carry their own place names (phone); build 2026-07-22g (phone: ➤ On/Off button beside Fill opacity toggles the arrows; Fill opacity now runs 0–100% (0 = fill off, arrows only); phone: Region selector removed (navigate by pinch-and-pan), double-tap-to-zoom disarmed on the controls; Key panel opens full-width at the bottom of the page, ± buttons flank the Fill opacity slider; uniform arrow lattice at every zoom; fork of the unified map: same phone layout, tap readout, offline save + staleness banner))</span></p>
 </header>
 <main>
   <div class="bar">
@@ -819,6 +819,13 @@ async function dlProgress(url, name, ms){  // stream a .bin so slow links show K
   const out=new Uint8Array(got); let o=0; for(const c of chunks){ out.set(c,o); o+=c.length; }
   return out;
 }
+// Region whose bbox holds the map centre (REGIONS order = ownership priority in the overlaps) — the
+// save unit for the per-trip currents pack. The three coverage-less coast regions carry bbox null and
+// are skipped, so a centre over Haida Gwaii / Cape St James / WCVI returns null → base-only save. WCVI
+// still gets working offline currents from the base pack's field overview (0.02°); the two northern
+// regions are genuinely outside the model and get wind only.
+function curRegionKey(){ const c=map.getCenter(), lo=c.lng, la=c.lat;
+  const r=REGIONS.find(x=>x[4]&&lo>=x[4][0]&&lo<=x[4][2]&&la>=x[4][1]&&la<=x[4][3]); return r?r[3]:null; }
 // Shrink the master timeline to a cached pack's hour axis. Every loaded tile keeps its OWN hourOf;
 // TIMES ⊆ every loaded axis is the invariant that keeps makeHourOf from ever throwing (or worse,
 // silently reading another run's hours).
@@ -838,34 +845,93 @@ async function saveOffline(){
   const b=$("saveBtn"); b.disabled=true; b.textContent="Saving…";
   try{
     setStatus("Saving for offline — fetching index…");
-    // Fresh manifest = the snapshot the bin written below is paired with.
+    // Fresh manifests = the snapshot every bin written below is paired with. Wind is the essential
+    // layer and is fatal on failure; the two SSCOFS manifests are OPTIONAL — a currents outage must
+    // never block a whole-coast wind save on this wind-led map (mirror of boot()'s §1.7a guard).
     const wm=await netFetch(R2+"/hrdps/manifest.json",15000).then(r=>r.json());
+    const [mm,fm]=CURRENTS_ON ? await Promise.all([
+      netFetch(R2+"/sscofs/meshvel/manifest.json",15000).then(r=>r.json()).catch(()=>null),
+      netFetch(R2+"/sscofs/field/manifest.json",15000).then(r=>r.json()).catch(()=>null),
+    ]) : [null,null];
     const ix=lsIndex();
+    // BASE pack (shared, region-independent): wind overview + SSCOFS current overview. A bin already
+    // saved at this run isn't re-downloaded. The field overview covers the whole SSCOFS domain incl.
+    // WCVI at 0.02°, so saving it gives the outer coast working offline currents at overview resolution.
     if(!(ix.base && ix.base.runWind===wm.run && await haveCached("bin/wind"))){
       const wire=await dlProgress(R2+"/hrdps/coast-overview.bin","coast wind");
       await ocPut("bin/wind",wire); await ocPut("man/hrdps.json",JSON.stringify(wm),"application/json");
     }
     ix.base={savedAt:Date.now(),runWind:wm.run};
+    if(fm){
+      if(!(ix.base.runCur===fm.run && await haveCached("bin/field"))){
+        const wire=await dlProgress(R2+"/sscofs/field/overview.bin","current overview");
+        await ocPut("bin/field",wire); await ocPut("man/field.json",JSON.stringify(fm),"application/json");
+      }
+      ix.base.runCur=fm.run;
+    }
+    // Per-region currents pack for wherever the map is looking (add more by navigating + saving again).
+    const rk=(mm&&fm) ? curRegionKey() : null;
+    if(rk){
+      await saveRegionPack(rk,mm);
+      ix.regions=ix.regions||{}; ix.regions[rk]={run:mm.run,savedAt:Date.now(),name:REGIONS.find(x=>x[3]===rk)[0]};
+    }
+    if(mm) await ocPut("man/meshvel.json",JSON.stringify(mm),"application/json");   // offline boot's region index + axis
     lsIndexSet(ix); evictionNote=null;
     if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});  // ask iOS not to evict
-    setStatus("Saved for offline: whole-coast wind. Kept current automatically whenever you open the map online; ↻ Refresh checks by hand.");
+    const what = rk ? "base pack + "+ix.regions[rk].name+" currents"
+               : fm ? "base pack (wind + current overviews)"
+               : "whole-coast wind";
+    setStatus("Saved for offline: "+what+". Kept current automatically whenever you open the map online; ↻ Refresh checks by hand.");
   }catch(e){ setStatus(isOnline()?"Save failed: "+e.message:"No connection — connect to wifi to save.",true); }
   refreshOfflineUI(); updateStale();
 }
-async function refreshNow(){   // manifest first (~5 KB); re-download only when the run is newer
+async function saveRegionPack(rk,mm){    // mesh + meshvel, paired with mm's run/axis via meta.json
+  const rm=mm.regions[rk], reg=REGIONS.find(x=>x[3]===rk);
+  const meta0=await ocGetJSON("region/"+rk+".meta.json");
+  let meshJson=(meta0 && meta0.n_elem===rm.n_elem) ? await ocGetJSON("region/"+rk+".mesh.json") : null;
+  if(!meshJson) meshJson=await (await netFetch(R2+"/sscofs/"+rm.mesh+"?v="+rm.n_elem,180000)).json();
+  if(!(meta0 && meta0.run===mm.run && await haveCached("region/"+rk+".bin"))){
+    const wire=await dlProgress(R2+"/sscofs/meshvel/"+rm.file,reg[0]+" currents");
+    await ocPut("region/"+rk+".bin",wire);
+  }
+  await ocPut("region/"+rk+".mesh.json",JSON.stringify(meshJson),"application/json");
+  await ocPut("region/"+rk+".meta.json",JSON.stringify({run:mm.run,hours:mm.hours,n_elem:rm.n_elem,name:reg[0],savedAt:Date.now()}),"application/json");
+}
+async function refreshNow(){   // manifests first (~5 KB); re-download only packs whose run is newer
   const b=$("refreshBtn"); b.disabled=true; b.textContent="Checking…";
   try{
     const ix=lsIndex();
-    if(!ix.base){ location.reload(); return; }           // nothing saved: plain reload
+    if(!ix.base && !Object.keys(ix.regions||{}).length){ location.reload(); return; }  // nothing saved: plain reload
+    // Wind manifest fatal; the two SSCOFS manifests optional (a currents outage must not block a wind
+    // refresh, and must not lose the saved current packs either — they carry their own copies).
     const wm=await netFetch(R2+"/hrdps/manifest.json",12000).then(r=>r.json());
+    const [mm,fm]=CURRENTS_ON ? await Promise.all([
+      netFetch(R2+"/sscofs/meshvel/manifest.json",12000).then(r=>r.json()).catch(()=>null),
+      netFetch(R2+"/sscofs/field/manifest.json",12000).then(r=>r.json()).catch(()=>null),
+    ]) : [null,null];
     let changed=false;
-    if(ix.base.runWind!==wm.run || !await haveCached("bin/wind")){
-      const wire=await dlProgress(R2+"/hrdps/coast-overview.bin","coast wind");
-      await ocPut("bin/wind",wire); await ocPut("man/hrdps.json",JSON.stringify(wm),"application/json"); changed=true; }
-    ix.base={savedAt:Date.now(),runWind:wm.run};
+    if(ix.base){
+      const nb={savedAt:Date.now(),runWind:wm.run};
+      if(ix.base.runWind!==wm.run || !await haveCached("bin/wind")){
+        const wire=await dlProgress(R2+"/hrdps/coast-overview.bin","coast wind");
+        await ocPut("bin/wind",wire); await ocPut("man/hrdps.json",JSON.stringify(wm),"application/json"); changed=true; }
+      if(ix.base.runCur && fm){                            // only when a current overview was ever saved
+        if(ix.base.runCur!==fm.run || !await haveCached("bin/field")){
+          const wire=await dlProgress(R2+"/sscofs/field/overview.bin","current overview");
+          await ocPut("bin/field",wire); await ocPut("man/field.json",JSON.stringify(fm),"application/json"); changed=true; }
+        nb.runCur=fm.run;
+      } else if(ix.base.runCur) nb.runCur=ix.base.runCur;  // SSCOFS down: keep the copy we have
+      ix.base=nb;
+    }
+    if(mm) for(const rk of Object.keys(ix.regions||{})){   // ALL saved regions move to the new run together
+      if(ix.regions[rk].run!==mm.run || !await haveCached("region/"+rk+".bin")){
+        await saveRegionPack(rk,mm);
+        ix.regions[rk]={run:mm.run,savedAt:Date.now(),name:ix.regions[rk].name}; changed=true; }
+    }
+    if(mm) await ocPut("man/meshvel.json",JSON.stringify(mm),"application/json");
     lsIndexSet(ix); evictionNote=null;
-    if(changed) location.reload();                       // re-boot on the fresh pack (URL keeps the view)
-    else { setStatus("Up to date — the saved pack is on the latest run.");
+    if(changed) location.reload();                       // re-boot on the fresh packs (URL keeps the view)
+    else { setStatus("Up to date — every saved pack is on the latest run.");
            b.disabled=false; b.textContent="↻ Refresh"; refreshOfflineUI(); updateStale(); }
   }catch(e){
     setStatus(isOnline()?"Refresh failed ("+e.message+") — keeping the saved data.":"No connection — keeping the saved data.",true);
@@ -894,9 +960,34 @@ setInterval(updateStale,60000);   // re-age the banner while the app sits open
 function refreshOfflineUI(){
   const s=$("saveBtn"); if(!s) return;
   const ix=lsIndex();
-  s.disabled=!!ix.base;
-  s.textContent=ix.base ? "✓ Saved for offline" : "⬇ Save offline (whole-coast wind)";
-  $("savedList").textContent=ix.base ? "Saved: whole-coast wind" : "";
+  if(!CURRENTS_ON){   // wind-only build: the pre-currents copy
+    s.disabled=!!ix.base;
+    s.textContent=ix.base ? "✓ Saved for offline" : "⬇ Save offline (whole-coast wind)";
+    $("savedList").textContent=ix.base ? "Saved: whole-coast wind" : "";
+    return;
+  }
+  const rk=curRegionKey(), regs=ix.regions||{}, c=map.getCenter();
+  // Outside the SSCOFS domain = north of the last data OR west of the clip box's wall. This is the
+  // SAME two-sided test the §2.4 region-selector status line uses, so Cape St James (west of −129,
+  // but south of 52.09) lands in the wind-only bucket with Haida Gwaii rather than being mistaken for
+  // in-domain outer coast on latitude alone.
+  const outside = c.lat>SSCOFS_LAT_MAX || c.lng<SSCOFS_EXTENT[0];
+  // "Saved here" differs by what this view can even get: a keyed region wants its mesh pack; the outer
+  // coast (WCVI, null key but inside the domain) is fully served by the base pack's current overview;
+  // the two out-of-domain regions have no current model, so wind alone is everything.
+  const savedHere = rk ? !!(ix.base && ix.base.runCur && regs[rk])
+                   : outside ? !!ix.base
+                   : !!(ix.base && ix.base.runCur);
+  s.disabled=savedHere;
+  s.textContent = savedHere ? "✓ Saved for offline"
+    : rk ? "⬇ Save offline (base + "+REGIONS.find(x=>x[3]===rk)[0]+")"
+    : outside ? "⬇ Save offline (base — wind only, no current model up here)"
+    : "⬇ Save offline (base — WCVI currents at overview resolution, no fine mesh here)";
+  const names=Object.values(regs).map(x=>x.name);
+  $("savedList").textContent = ix.base
+    ? "Saved: "+(ix.base.runCur?"wind + current overviews":"whole-coast wind")
+      +(names.length?" + "+names.join(", ")+" currents":"")
+    : "";
 }
 /* ============================================================================================= */
 
@@ -986,9 +1077,8 @@ async function ensureTile(key){
     // (1) a saved region pack already on the live run paints without downloading; (2) network (the
     // mesh keeps the ?v=n_elem force-cache as tier 2 — a saved pack holds its OWN copy so HTTP-cache
     // eviction can't strand it); (3) the saved pack at ANY run, indexed on its own meta.hours axis.
-    // NOTE region packs are only ever WRITTEN by phase 3 (offline packs), which is not in this
-    // build — so today path (1) and the write-through never fire and every zoomed-in tile comes off
-    // the network. The read paths are kept verbatim from unified_map.html so phase 3 adds only savers.
+    // Region packs are written by saveOffline/saveRegionPack (phase 3) and by the write-through below,
+    // both live in this build; the read paths mirror unified_map.html verbatim.
     let mj=null, bytes=null, hoursMs=meshMan.hours, src="live";
     const ix=lsIndex(), saved=(ix.regions||{})[key];
     if(manSrc.mm==="live" && saved && saved.run===meshMan.run){
@@ -1066,9 +1156,9 @@ async function loadOverviewOnce(){
       setStatus("Loading whole-coast current overview (~1.7 MB)…");
       const wire=new Uint8Array(await (await netFetch(R2+"/sscofs/field/overview.bin",180000)).arrayBuffer());
       bytes=wire;
-      // Opportunistic write-through: phase 3 (offline packs) is not in this build, so nothing ever
-      // SAVES the current overview deliberately — but a user who already has the wind pack gets a
-      // coherent (bin + its own manifest) copy for free the first time they open the layer online.
+      // Opportunistic write-through: saveOffline saves the current overview deliberately, but a user
+      // who already has a wind-only base pack (or opens the layer before ever tapping Save) still gets
+      // a coherent (bin + its own manifest) copy for free the first time they open the layer online.
       if(ix.base) ocPut("bin/field",wire)                      // wire body, pre-gunzip
         .then(()=>ocPut("man/field.json",JSON.stringify(fieldMan),"application/json"))
         .then(()=>{ const x=lsIndex(); if(x.base){ x.base.runCur=fieldMan.run; lsIndexSet(x); refreshOfflineUI(); } })
@@ -1078,10 +1168,11 @@ async function loadOverviewOnce(){
   if(!bytes){                                                  // offline or fetch failed: saved pack
     const pm=await ocGetJSON("man/field.json"); bytes=await ocGetBytes("bin/field");
     if(!pm || !bytes){
-      // Only an ix.base that RECORDS a saved current overview (runCur, set by the write-through
-      // above) can have lost one. The plain wind-only pack this build's saveOffline writes has no
-      // currents in it, so a miss here is the normal state — warning "the system removed it" would
-      // be a lie, and clearing ix.base would throw away the user's saved WIND pack with it.
+      // Only an ix.base that RECORDS a saved current overview (runCur, set by saveOffline or the
+      // write-through above) can have lost one → genuine eviction. A wind-only base pack (Haida/Cape
+      // saver, or a pre-currents save) has no runCur, so a miss here is the normal state, not an
+      // eviction — warning "the system removed it" would be a lie, and clearing ix.base would throw
+      // away the user's saved WIND pack with it. The runCur gate keeps the two cases apart.
       if(ix.base && ix.base.runCur) noteEviction("current overview",x=>{ if(x.base) delete x.base.runCur; });
       throw new Error(evictionNote||"offline — the saved pack holds wind only, so currents need a connection.");
     }
@@ -1297,7 +1388,7 @@ function applyURL(){
   if(v) map.setView([v.lat,v.lon],Math.max(v.z,map.getMinZoom()));
   return URL_VIEW.h;
 }
-map.on("moveend zoomend",()=>{ updateTiles(); updateURL(); });   // mesh tiles load from the viewport
+map.on("moveend zoomend",()=>{ updateTiles(); updateURL(); refreshOfflineUI(); });   // mesh tiles load from the viewport; save button tracks the region under the centre
 
 // Region select = navigation shortcut; tile loading is automatic from the viewport.
 { const o=document.createElement("option"); o.value=-1; o.textContent="Full coast (overview)"; $("region").appendChild(o); }
@@ -1430,11 +1521,17 @@ async function boot(){
       const both=inter(inter(mm.hours,fm.hours), wh);
       const lostTail=both.length ? wh.filter(h=>h>both[both.length-1]).length : 99;
       if(both.length>=12 && lostTail<=6) TIMES=both;
-      else { dropWhy="no overlapping SSCOFS hours"; dropCurrents(); }   // wind keeps its full axis
+      // Floor guard tripped. Offline (either manifest from cache) this usually means a saved currents
+      // pack is on an older run than the saved wind and no longer overlaps it — a reconnect+Refresh
+      // fixes it; online it means SSCOFS has genuinely missed a cycle. Either way wind keeps its full axis.
+      else { dropWhy=(manSrc.mm==="cache"||manSrc.fm==="cache")
+               ? "saved currents are from an older run — reconnect and ↻ Refresh"
+               : "no overlapping SSCOFS hours";
+             dropCurrents(); }
     } else if(CURRENTS_ON){
-      // The airplane-mode relaunch lands here: this build saves wind only (offline packs are
-      // phase 3), so there is no cached SSCOFS manifest to fall back to. Say that, rather than
-      // blaming an hour mismatch that was never tested.
+      // No SSCOFS manifest at all. Online: the feed is down. Offline: nothing SSCOFS was ever saved
+      // (base pack held wind only, or was saved before currents existed) — say that, rather than
+      // blaming an hour mismatch.
       dropWhy=isOnline()?"SSCOFS feed unavailable":"no saved currents data — connect for currents";
       dropCurrents();
     }
